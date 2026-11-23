@@ -1,6 +1,6 @@
 ---
 name: typescript-configuration-resilience
-description: Load before constructing or tuning an APIMatic-generated TypeScript SDK client — picking a server environment or overriding a base URL, changing the on-by-default retries or `retry.timeout`, adding cancellation or a deadline, turning the built-in logging on or off, making a write safe to retry, paging through results, or wrapping `fetch` for header injection, proxies, TLS or connection pooling.
+description: Load before constructing or tuning an APIMatic-generated TypeScript SDK client — picking a server environment or overriding a base URL, changing the on-by-default retries or `retry.timeout`, adding cancellation or a deadline, turning the built-in logging on or off, adding a request or response hook for a header, a trace or a metric, making a write safe to retry, paging through results, or wrapping `fetch` for proxies, TLS or connection pooling.
 ---
 
 # Configuration & resilience for an APIMatic TypeScript SDK
@@ -14,7 +14,7 @@ description: Load before constructing or tuning an APIMatic-generated TypeScript
 
 Everything configurable is a field on `ClientOptions` (`src/client-options.ts`), passed to the one
 constructor. There is no `Configuration` class, no builder, and no per-request override beyond
-`{ signal, retry, logging }`. Server groups, environments and their URL templates live in `src/servers.ts`.
+`{ signal, retry, logging, hooks }`. Server groups, environments and their URL templates live in `src/servers.ts`.
 
 ## The whole configuration surface
 
@@ -24,8 +24,9 @@ constructor. There is no `Configuration` class, no builder, and no per-request o
 | `serverOptions` | `ServerOptions` | `{}` | per-group, per-environment `baseUrl` and template-variable overrides |
 | `retry` | `RetryOptions` | retries **on** — see *Retries* | the retry policy, and `retry.timeout` (**ms**, `60_000`) bounding each attempt |
 | `logging` | `LoggingOptions` | **off** — see *Logging* | the built-in request/response logger, its levels and its redaction |
+| `hooks` | `HookOptions` | none | your functions run before each attempt is sent and once its response arrives — see *Hooks* |
 | `eventStream` | `EventStreamOptions` | `idleTimeout` `60_000` (**ms**) | how long an event stream may stay silent; read only by an operation that resolves to an `EventStream` — see **typescript-event-streams** |
-| `fetch` | `FetchLike` (`typeof fetch`) | global `fetch` | **the one transport extension point** |
+| `fetch` | `FetchLike` (`typeof fetch`) | global `fetch` | **replaces the transport** — a proxy, TLS, a pool or a mock |
 | `{scheme}` / `{scheme}Strategy` | per scheme | unset | credentials — see **typescript-authentication** |
 
 Read the defaults off your own SDK rather than trusting the column: the credential members and the
@@ -35,21 +36,79 @@ default environment are per-SDK.
 
 | You might reach for | Reality |
 | --- | --- |
-| hooks, middleware, interceptors, `onRequest`/`onResponse` | none. `fetch` is the one transport extension point; `retry.onRetry` is the one callback, and it sees only retries |
+| middleware, interceptors, `onError` | none. `hooks` gives `beforeRequest` and `afterResponse` (*Hooks*); nothing wraps the whole call, an attempt with no response reaches no `afterResponse` hook, and `retry.onRetry` sees only retries |
 | SSE request bodies, WebSockets | none. `text/event-stream` is a response media type only — an operation whose success is one resolves to an `EventStream<T>` you iterate with `for await` (**typescript-event-streams**). Every other decoder reads the body to completion, bar a binary success, which hands its stream over unread |
 | multipart <em>responses</em>, XML bodies | none. Body kinds are empty, JSON, form-urlencoded, text, multipart and binary |
-| per-request `headers`, `baseUrl`, idempotency key | none. `RequestOptions` is `{ signal, retry, logging }`; `retry` takes only `maxRetries`, `timeout` and `statusCodesToRetry`, and `logging` only `level` |
+| per-request `headers`, `baseUrl`, idempotency key | not as fields. `RequestOptions` is `{ signal, retry, logging, hooks }`; `retry` takes only `maxRetries`, `timeout` and `statusCodesToRetry`, and `logging` only `level`. A call's `beforeRequest` hook can set a header, the minted `Idempotency-Key` included — make a replacement key once per call, outside the hook, since a hook runs on every attempt and a key made inside it changes on each retry; a base URL cannot be set per call |
 | a circuit breaker, a rate limiter | none. The retry loop honours `Retry-After`, but nothing limits how many calls you start |
 | the raw `fetch` `Response` | deliberately unreachable. `status`/`headers` are on `asApiResult()` and on `ResponseError` |
 
-Everything in the left column that you actually need, you build on `fetch`. The rest of this skill is
-those patterns and the traps in them.
+Everything in the left column that you actually need, you build in a hook, on `fetch` or around the
+SDK call. The rest of this skill is those patterns and the traps in them.
 
 **What the SDK does own**, so that you do not rebuild it: URL and server resolution, request
 encoding and schema validation on the way out, auth application and OAuth token caching, response
 decoding, the two-family error mapping, the `Idempotency-Key` on every non-GET call, fetching and
 advancing the pages of a paged operation, the retry loop with its per-attempt timeout, and
 request/response logging with redaction.
+
+## Hooks
+
+`hooks` takes a `HookOptions`: two lists of plain functions, `beforeRequest` and `afterResponse`
+(`src/core/hooks.ts`; all four types are exported from the package root). Set it on `ClientOptions`
+for every call, or on `RequestOptions` for one.
+
+```ts
+import { {Api}Client, type HookOptions } from "{package-name}";
+
+const hooks: HookOptions = {
+  beforeRequest: [
+    (request) => {
+      request.headers.set("x-correlation-id", currentCorrelationId());
+    },
+  ],
+  afterResponse: [
+    (response, context) => {
+      metrics.count("api.response", { method: context.method, status: response.status });
+    },
+  ],
+};
+
+const client = new {Api}Client({ hooks });
+await client.{resource}.{operation}({ /* ... */ }, { hooks: { beforeRequest: [tagTenant] } });
+```
+
+Each hook gets three arguments: the attempt's `Request` or `Response`, a `HookContext`
+(`method`, `uri`, and `options` — the call's `RequestOptions` without its `signal`) and the call's
+`signal`. The rules that decide how you write one:
+
+- **Order.** The client's hooks run first, then the call's, list by list. A call's hooks are added to
+  the client's, never put in their place, so a call cannot switch a client hook off.
+- **Return nothing, or a replacement.** A `beforeRequest` hook edits `request.headers` in place, or
+  returns a `Request` to send instead — build it with `new Request(request, { … })` so it keeps the
+  call's signal; one built from scratch loses the call's abort and its timeout. An `afterResponse`
+  hook returns nothing, or a `Response` that the retry decision and the decoder then read. A hook may
+  return a promise.
+- **Read a body through `response.clone()`.** Nothing guards the body: a hook that reads it and
+  returns no replacement leaves the SDK nothing to decode, and the call fails with a `DecodeError`.
+  A hook that returns a different `Response` owns the one it was handed — read it, or cancel its body.
+  Reading a clone waits for the whole body, so on an event stream or a download read only the
+  status and headers: reading either one's clone holds the stream back until it ends and buffers
+  the download whole.
+- **They run on every attempt and every page.** A call retried three times runs its `beforeRequest`
+  hooks four times.
+  `beforeRequest` runs once the credential is on the request and before the request is logged, so the
+  debug log shows a header a hook set. `afterResponse` runs once the headers arrive, before the retry
+  decision. Neither counts against `retry.timeout`.
+- **A throw ends the call with what it threw, unretried** — unlike a `fetch` wrapper's throw, which is
+  retried as a `ConnectionError`.
+- **The OAuth token request runs the client's hooks and no call's**, so a client hook sees the token
+  POST, `client_secret` and all, where the built-in logger masks it. Filter on `context.uri` where
+  that matters.
+- **An attempt that never got a response reaches no `afterResponse` hook** — a dropped connection or
+  a timeout is `retry.onRetry`'s, or the caller's `catch`.
+- **The client's lists are read as each call starts**, so a hook pushed onto one after construction
+  runs on the next call. A hook is called as a plain function: bind a class method before listing it.
 
 ## The `fetch` seam
 
@@ -496,13 +555,13 @@ for await (const page of client.{resource}.{operation}({ /* ... */ }).pages()) {
 }
 ```
 
-Every page is its own request: `options` — the `signal`, the per-call `retry` and `logging` — applies to each one,
+Every page is its own request: `options` — the `signal`, the per-call `retry`, `logging` and `hooks` — applies to each one,
 and each one goes through the retry policy on its own. Where the walk stops is the strategy's rule:
 
 | Strategy | Advances by | Stops when |
 | --- | --- | --- |
 | offset | the item count of each page | the next offset reaches the total, a page is empty, `hasMore` is `false`, or — when the page carries neither a total nor `hasMore` — a page is shorter than the limit |
-| page-number | one page | the page number reaches the total pages, `hasMore` is `false`, or — when the page carries no `hasMore` — a page is empty, or is shorter than the limit with no total |
+| page-number | one page | the page number reaches the total pages, `hasMore` is `false`, or — when the page carries neither `hasMore` nor a total — a page is empty or shorter than the limit |
 | cursor | the next cursor the response carries | the response carries no next cursor, the cursor did not change, or `hasMore` is `false` |
 | `Link` | the next link the response carries, resolved against the page's own URL | the response carries no next link, or the link did not change |
 
@@ -744,20 +803,10 @@ Then turn the level back down.
 
 ### Header injection
 
-```ts
-const client = new {Api}Client({
-  fetch: (input, init) => {
-    const request = new Request(input, init);
-    request.headers.set("x-correlation-id", currentCorrelationId());
-    return fetch(request);
-  },
-});
-```
-
-Set the header on a copy of the `Request` — the SDK has already put the content type and the
-credential on it, and the copy keeps them, the body and the signal. Passing `{ headers }` as `init`
-instead **replaces** every header the SDK set, the credential included. This is the only client-wide
-header mechanism: `ClientOptions` has no header option.
+A header goes in a `beforeRequest` hook (*Hooks*). A `fetch` wrapper can set one too, on a copy of
+the `Request` — `new Request(request)` keeps the content type, the credential, the body and the
+signal the SDK put on it. Passing `{ headers }` as `init` instead **replaces** every header the SDK
+set, the credential included.
 
 ### Rate limiting
 
@@ -847,7 +896,8 @@ client costs under OAuth — is **typescript-client-initialization**.
 | Symptom | Where to look |
 | --- | --- |
 | calls never time out | a `fetch` replacement that does not forward the `Request`, or its `signal` |
-| a header added in a `fetch` wrapper arrives, but every call is now a `401` | the wrapper passed `{ headers }` as `init`, which replaces the SDK's headers — copy the `Request` instead (*Header injection*) |
+| a header added in a `fetch` wrapper arrives, but every call is now a `401` | the wrapper passed `{ headers }` as `init`, which replaces the SDK's headers — set it in a `beforeRequest` hook, or copy the `Request` (*Header injection*) |
+| a `DecodeError` whose cause says the body is unusable, after adding an `afterResponse` hook | the hook read the body — read `response.clone()` instead (*Hooks*) |
 | request lines in the logs with no logging code | `{APICLIENTTYPENAME}_LOG` is set in that environment — set `logging.level` in code to own it |
 | a JSON body or a card number in the logs | `logRequestBody`, or a per-call `level`, which turns the body on — see *Logging* |
 | a failing call takes seconds longer to reject than the first failure | expected on an idempotent call: the default policy retried it — watch it with `retry.onRetry` |

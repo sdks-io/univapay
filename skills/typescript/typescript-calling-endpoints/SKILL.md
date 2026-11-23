@@ -279,11 +279,13 @@ strategies, their stop rules and the bounded shape.
 
 ## Cancellation and per-call retry
 
-`RequestOptions` = `{ signal?: AbortSignal; retry?: RequestRetryOptions; logging?: RequestLoggingOptions }`
+`RequestOptions` = `{ signal?: AbortSignal; retry?: RequestRetryOptions; logging?: RequestLoggingOptions; hooks?: HookOptions }`
 is the entire per-call surface. `retry` overrides `maxRetries`, `timeout` and `statusCodesToRetry` for
-this call, field by field — a field you leave out keeps the client's value — and `logging` takes only a
-`level`. Headers, base URL, auth and the other retry and logging fields are client-level only
-(**typescript-client-initialization**, **typescript-configuration-resilience**).
+this call, field by field — a field you leave out keeps the client's value — `logging` takes only a
+`level`, and `hooks` adds this call's `beforeRequest` and `afterResponse` functions after the client's.
+A header for one call goes in its `beforeRequest` hook; base URL, auth and the other retry and logging
+fields are client-level only (**typescript-client-initialization**,
+**typescript-configuration-resilience**).
 
 ```ts
 await client.{resource}.{operation}({ /* ... */ }, { retry: { maxRetries: 0 } });    // one attempt

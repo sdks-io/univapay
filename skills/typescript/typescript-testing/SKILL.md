@@ -263,20 +263,26 @@ it("sends the right request", async () => {
   carries a generated boundary, so match it as a prefix, never with `toBe`. Compare a file part by its
   contents, `await new Response(form.get("{field}")).text()`: one sent without a file name may come
   back as a string or a `File`.
-- **A list-valued query or form parameter has a per-parameter wire style.** Its `StyledParam` in
-  `src/resources/{resource}.ts` carries a `style`: `plain` (the default —
+- **A list- or object-valued query or form parameter has a per-parameter wire style.** Its
+  `StyledParam` in `src/resources/{resource}.ts` carries a `style`: `plain` (the default —
   `name=a&name=b`), `indexed` (`name[0]=a`, percent-encoded in the raw URL as `name%5B0%5D=a`),
-  `unindexed` (`name[]=a`), or `csv` / `tsv` / `psv` (one joined value). Read it before asserting:
+  `unindexed` (`name[]=a`), or `csv` / `ssv` / `tsv` / `psv` (one value, joined on a comma, a space,
+  a tab or a pipe). An entry written with **no `name`** is a spread: each property of its object is
+  sent as a top-level key. Read the entry before asserting:
 
   ```ts
   expect(url.searchParams.getAll("{name}")).toEqual(["a", "b"]);   // plain — get() returns only the FIRST
   expect(url.searchParams.get("{name}[0]")).toBe("a");             // indexed
   expect(url.searchParams.getAll("{name}[]")).toEqual(["a", "b"]); // unindexed
   expect(url.searchParams.get("{name}")).toBe("a,b");              // csv
+  expect(url.searchParams.get("{name}")).toBe("a b");              // ssv
+  expect(url.searchParams.get("{property}")).toBe("a");            // no name — each property is its own key
   ```
 
-  Object-valued parameters flatten to `key[sub]=value`. Path and header arrays are not configurable —
-  both fold to one comma-separated value.
+  An object-valued parameter with no style flattens to `key[sub]=value`. Under `csv`, `ssv` or `psv`
+  it is one value holding its keys and values in turn (`R,100,G,200`), and in an entry with no name
+  each property is a key of its own. An empty array or object sends no key under any style. Path and
+  header arrays are not configurable — both fold to one comma-separated value.
 - The expected verb and route are the operation's **Wire** bullet in `map/operations/{resource}.md`,
   and the channel each field travels on is its **Fields** table. Take them from there — a field's
   channel is not derivable from its name.

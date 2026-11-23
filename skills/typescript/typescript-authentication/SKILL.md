@@ -31,10 +31,10 @@ shapes:
 
 | Scheme kind | `ClientOptions.{scheme}` type | Sent as |
 | --- | --- | --- |
-| HTTP bearer | `TokenProvider` | `Authorization: Bearer {token}` |
-| API key in header | `TokenProvider` | the API's header name |
-| API key in query | `TokenProvider` | the API's query parameter |
-| API key in cookie | `TokenProvider` | a `Cookie` pair under the API's name |
+| HTTP bearer | `SecretProvider` | `Authorization: Bearer {token}` |
+| API key in header | `SecretProvider` | the API's header name |
+| API key in query | `SecretProvider` | the API's query parameter |
+| API key in cookie | `SecretProvider` | a `Cookie` pair under the API's name |
 | HTTP basic | `BasicAuthCredentials` | `Authorization: Basic base64(user:pass)` |
 | OAuth 2 client credentials | `OAuth2ClientCredentials` | `Authorization: Bearer {fetched token}` |
 | OAuth 2 password | `OAuth2PasswordCredentials` | `Authorization: Bearer {fetched token}` |
@@ -76,17 +76,17 @@ SDK, not by anything you pass. Set the configured key member to your key string:
 const client = new {Api}Client({ {scheme}: process.env.API_KEY! });
 ```
 
-All four of these kinds are the **same slot to you**: `TokenProvider`, which is a string, or something
+All four of these kinds are the **same slot to you**: `SecretProvider`, which is a string, or something
 that produces one. Which channel it travels on is the scheme's business.
 
 A query-placed key is percent-encoded exactly as an endpoint's own query parameter. A cookie-placed key
 is **also** percent-encoded, and it is merged into any `Cookie` header already on the request rather
 than replacing it — only a cookie of the same name is overwritten.
 
-### A `TokenProvider` may be a function
+### A `SecretProvider` may be a function
 
 ```ts
-type TokenProvider = string | ((signal: AbortSignal) => string | Promise<string>);
+type SecretProvider = string | ((signal: AbortSignal) => string | Promise<string>);
 ```
 
 Pass a **function** when the secret rotates, comes from a vault, or is not known at construction time.
@@ -315,7 +315,7 @@ by `allAuth(...)` / `anyAuth(...)`; you configure it by setting the relevant cre
   authenticated** rather than failing.
 - **OR (`anyAuth`)** — the **first** scheme in declaration order that has credentials is used and the
   rest are ignored. So which credential is sent depends on declaration order in `src/auth-schemes.ts`,
-  not on which looks more specific. A `TokenProvider` **function** always counts as "has credentials",
+  not on which looks more specific. A `SecretProvider` **function** always counts as "has credentials",
   even if it returns an empty string — so a function provider always wins the OR.
 
 Because composition is **per operation**, one client may authenticate different operations with
@@ -360,13 +360,13 @@ Three rules for the message it fails with:
   hides the fault and pushes it to the first caller.
 
 Check every credential the scheme requires. Basic auth needs both halves — a username with an empty
-password is misconfigured, not partially configured. An empty-string `TokenProvider` is treated as
+password is misconfigured, not partially configured. An empty-string `SecretProvider` is treated as
 absent, so a blank env var is the same fault as an unset one.
 
 ## Notes
 
 - **Credentials are fixed at construction.** `ClientOptions` is `readonly` and the auth schemes are
-  built in the constructor, so to rotate a credential you use a `TokenProvider` **function**, replace
+  built in the constructor, so to rotate a credential you use a `SecretProvider` **function**, replace
   the strategy, or build a new client. There is no mutable accessor.
 - **Rotating a long-lived client:** the token cache is per client instance, so swap atomically — build
   the new client, then replace the shared reference. In-flight calls finish on the old one and there

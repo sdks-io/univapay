@@ -312,8 +312,9 @@ const back  = {model}Schema.decode(JSON.parse(JSON.stringify(wire)));
 ```
 
 Both directions throw `SchemaError` on mismatch and produce nothing partial. Using a schema on
-inbound data the SDK did not hand you — a webhook body, a queue message, a cached blob — is the
-intended use. For a model whose spec declares value constraints it is stricter than a response, not
+inbound data the SDK did not hand you — a queue message, a cached blob, a webhook body on an SDK
+whose spec declares no webhooks — is the intended use. An SDK with `src/webhooks/` parses a delivery
+for you: see the inbound webhooks section of **typescript-client-initialization**. For a model whose spec declares value constraints it is stricter than a response, not
 the same: `{model}Schema` enforces them on `decode` as it does on `encode`, while an operation
 decodes through the structural twin, so a payload that breaks a `pattern` or a bound passes through
 an operation and throws here. Catch `SchemaError` on that path if a payload the service already

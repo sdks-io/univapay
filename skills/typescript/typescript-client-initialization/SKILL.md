@@ -17,11 +17,14 @@ from the SDK you are using:
 - `{group}` — a named server group key inside `serverOptions` (`default` is the usual one).
 - `{resource}` / `{operation}` — a resource getter on the client and an operation on it.
 - `{scheme}` — a credential member on the options object, one per auth scheme the API declares.
+- `{Event}` — a webhook event in upper camel case: its discriminator value (`PaymentStatusUpdated` for
+  `payment_status.updated`), or, when the spec declares no discriminator, its payload model's name. Its
+  guard on the event class is `is{Event}()`.
 
 Everything under `src/core/` is **the same in every APIMatic TypeScript SDK**, so the engine behaviours
 described in these skills hold without checking yours. What varies per SDK is
-`src/client.ts`, `src/client-options.ts`, `src/servers.ts`, `src/auth-schemes.ts`, `src/resources/`
-and `src/models/`.
+`src/client.ts`, `src/client-options.ts`, `src/servers.ts`, `src/auth-schemes.ts`, `src/resources/`,
+`src/models/` and, when the spec declares webhooks, `src/webhooks/`.
 
 ## Where to read the client's shape
 
@@ -63,7 +66,7 @@ Operations hang off resource getters, `client.{resource}.{operation}(...)`, or s
 client when the SDK has no resource level — take them from the contract sheet, not the API's own
 documentation (**typescript-calling-endpoints**).
 
-The options type always carries these six knobs (credential members vary per API — see
+The options type always carries these seven knobs (credential members vary per API — see
 **typescript-authentication**):
 
 ```ts
@@ -73,16 +76,18 @@ export type ClientOptions = {
   readonly retry?: RetryOptions | undefined;          // retry policy + per-attempt timeout (MILLISECONDS).
                                                       //   Retries ON by default
   readonly logging?: LoggingOptions | undefined;      // request/response logging — OFF by default
+  readonly hooks?: HookOptions | undefined;           // beforeRequest / afterResponse functions —
+                                                      //   none by default
   readonly eventStream?: EventStreamOptions | undefined; // event-stream idle timeout (MILLISECONDS) —
                                                       //   read only by an EventStream operation
-  readonly fetch?: FetchLike | undefined;             // the ONE transport extension point —
+  readonly fetch?: FetchLike | undefined;             // replaces the transport —
                                                       //   see typescript-configuration-resilience
   // + one OPTIONAL credential member per auth scheme the API declares, and — for an OAuth2 scheme —
   //   a {scheme}Strategy member alongside it (see typescript-authentication)
 };
 ```
 
-Those six names are fixed in every SDK; a credential named like one of them carries a suffix
+Those seven names are fixed in every SDK; a credential named like one of them carries a suffix
 instead. **Every member is `readonly`**, and the client captures your options once, at construction —
 a different configuration means a new client. Each default is applied where the value is read: a
 server variable takes the `@default` on its member in `src/client-options.ts`, `fetch` takes its in
@@ -97,11 +102,13 @@ retryably is re-sent up to 3 more times with backoff, so its failure surfaces se
 `retry.timeout` (milliseconds) bounds each attempt, not the call; `retry: { maxRetries: 0 }` turns
 retrying off. **typescript-configuration-resilience** owns the policy.
 
-**`fetch` is the only transport extension point.** The SDK has no hooks or middleware, and streams
-only a `text/event-stream` response, through an operation that resolves to an `EventStream`
-(**typescript-event-streams**) — build anything else by wrapping `fetch`
-(**typescript-configuration-resilience**). A replacement must
-forward the `Request` it is handed, or its `signal`, or cancellation and timeouts go inert. **Logging is
+**Hooks run your code around each request; `fetch` replaces the transport.** `hooks` takes
+`beforeRequest` and `afterResponse` lists of functions, for a header, a trace or a metric, and a call
+can add its own through `RequestOptions.hooks`; a proxy, TLS or a mock goes in `fetch`
+(**typescript-configuration-resilience** owns both). The SDK has no middleware, and streams only a
+`text/event-stream` response, through an operation that resolves to an `EventStream`
+(**typescript-event-streams**). A `fetch` replacement must forward the `Request` it is handed, or its
+`signal`, or cancellation and timeouts go inert. **Logging is
 built in and off by default**, and the `{APICLIENTTYPENAME}_LOG` environment variable (the client class
 name in upper snake case, plus `_LOG`) can turn it on with no code change
 (**typescript-configuration-resilience**).
@@ -277,19 +284,56 @@ across them — pick one dialect per process, or narrow on `err.kind` (**typescr
 
 Two consumer compiler settings change what you type at the construction site. Under
 `exactOptionalPropertyTypes`, **omit or spread** an absent option rather than assigning `undefined` to
-it. Under `verbatimModuleSyntax`, names that carry no runtime value — `ClientOptions` and every model
-type — must be imported with `import type`; `{Api}Client` and `ServerEnvironment` are real values and
-are imported normally.
+it. Under `verbatimModuleSyntax`, names that carry no runtime value — `ClientOptions`, every model
+type and, on an SDK with webhooks, `WebhookOptions`, `SecretProvider`, `RequestHeaders` and
+`RequestBodyStream` — must be imported with `import type`; `{Api}Client` and `ServerEnvironment` are
+real values and are imported normally.
 
-## Inbound webhooks — what the emitted package does and does not give you
+## Inbound webhooks — what `src/webhooks/` does and does not give you
 
-**There is no webhook surface at all** — no event parser, no signature verifier, and no member of
-`ClientOptions` that turns one on.
+An SDK whose spec declares webhooks ships `src/webhooks/`, re-exported from the package root, and
+`webhook-reference.md` beside `api-reference.md` lists its events and settings. An SDK whose spec
+declares none has no webhook surface at all, and no member of `ClientOptions` turns one on.
 
-So verifying an inbound webhook is entirely yours to write, against the provider's published scheme:
-capture the raw body before any JSON parsing, compute the signature yourself, and compare in constant
-time. The SDK's model types stay useful for *deserializing* an event body once you have verified it —
-but do not read "the SDK parses this" as "the SDK verified this". See **typescript-models**.
+**Build the request from the bytes the provider sent.** `WebhookRequest.fromBytes(body, headers)`
+takes a `string`, `Uint8Array` or `ArrayBuffer`; `fromStream(body, headers)` drains a web
+`ReadableStream`, a Node `Readable` or any async iterable of `Uint8Array`; `fromRequest(request)`
+reads a clone of a fetch `Request`, so your own handler can still read it. Never re-serialise a body a
+framework has already parsed: the signature was computed over the bytes as sent, and
+`JSON.stringify` does not give them back. Headers are a `Headers` object or a plain record.
+
+**Verify before you parse, on the same request.** If the spec declares signature verification the SDK
+has `{Api}SignatureVerifier`: `new {Api}SignatureVerifier(options)` takes a `WebhookOptions` with
+`secret` (required — a string, or a function returning one) and `replayTolerance` where the spec
+declares a replay window (seconds; `false` turns the window off, and `0` keeps it on with no slack).
+A blank secret string throws `ConfigurationError` from the constructor; a function is called on
+every `verify` that reaches the signature check, so the secret can rotate without rebuilding the
+verifier, and a blank result throws the same error from that `verify`.
+`await verifier.verify(request, signal?)` resolves `true` or `false`, hands its optional signal to a
+`secret` function, and throws for nothing a delivery can contain. Without that class, verification
+is yours to write against the provider's published scheme: compute the signature over the raw bytes
+and compare in constant time.
+
+**Parsing verifies nothing.** `parse{Api}WebhookEvent(request)` reads the body into an
+`{Api}WebhookEvent` and throws `SchemaError` when it is not a JSON object, or has no discriminator
+where the spec declares one. The event carries `payload`, and `type` when the spec declares a
+discriminator; `event.is{Event}()` narrows `payload` to that event's model, and `type` to its value
+where there is one. Without a discriminator there is one guard per payload model, so events that
+share a body share its guard and cannot be told apart. Two events can also share a discriminator value
+when the spec's `mapping` leaves one out and its id is the other's value; they share that value's
+guard, which narrows `payload` to the union of their models — call `matches` on one model's exported
+schema to tell them apart. An event every guard refuses is one the SDK
+could not match to a listed event — handle it. Build one verifier per process, as you do the client;
+the parse function keeps no state.
+
+```ts
+const webhookRequest = await WebhookRequest.fromRequest(request);
+if (!(await verifier.verify(webhookRequest))) return reply(401);
+const event = parse{Api}WebhookEvent(webhookRequest);
+if (event.is{Event}()) {
+  handle(event.payload);
+}
+```
 
 ## Next
 

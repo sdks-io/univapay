@@ -21,7 +21,7 @@ Verified against `package.json` and `sdk-map.md` of the package at version `1.3.
 | Version | `1.3.0` (API spec version `1.3.0`) |
 | Client class | `UnivapayPublicApiClient` (`src/client.ts`) |
 | Options type | `ClientOptions` (`src/client-options.ts`) |
-| Client construction | `new UnivapayPublicApiClient(options: ClientOptions = {})` — the argument is optional, as is **every** field on it, so `new UnivapayPublicApiClient()` compiles. Fields: `serverOptions` · `retry` · `logging` · `fetch` · `jwtToken`. `retry` is the `RetryOptions` policy |
+| Client construction | `new UnivapayPublicApiClient(options: ClientOptions = {})` — the argument is optional, as is **every** field on it, so `new UnivapayPublicApiClient()` compiles. Fields: `serverOptions` · `retry` · `logging` · `hooks` · `fetch` · `jwtToken`. `retry` is the `RetryOptions` policy |
 | Auth | **Bearer token** — set `ClientOptions.jwtToken` |
 | Environments | no selector — one environment; 2 server groups |
 | Base-URL config | `serverOptions.<group>.baseUrl` (`src/servers.ts`) |
@@ -46,7 +46,7 @@ Do not vendor its `src/` into your project, point `tsconfig` `paths` at a throwa
 
 ## Imports — one entry, and only one
 
-**Every** public name is re-exported from the package root — the client, `ClientOptions`, 267 model types with the schema value beside each, the error classes, and the runtime types (`ApiPromise`, `Pageable`, `PageableApiResult`, `ApiResult`, `RequestOptions`, `RetryOptions`, `RequestRetryOptions`, `Declared`, `Undeclared`, `Schema`, `EnumSchema`, `Encoded`, `JsonValue`).
+**Every** public name is re-exported from the package root — the client, `ClientOptions`, 267 model types with the schema value beside each, the error classes, and the runtime types (`ApiPromise`, `Pageable`, `PageableApiResult`, `ApiResult`, `RequestOptions`, `RetryOptions`, `RequestRetryOptions`, `HookOptions`, `BeforeRequestHook`, `AfterResponseHook`, `HookContext`, `Declared`, `Undeclared`, `Schema`, `EnumSchema`, `Encoded`, `JsonValue`).
 
 ```ts
 import { UnivapayPublicApiClient, ApiError, UnivapayPublicApiError } from "univapay-public-api";
@@ -93,7 +93,7 @@ Resources are **memoized lazy getters** on the client (`client.<attr>`); reach o
 
 12 resources: `sdk-map.md` § *Operations — by resource* names every operation, with the page that documents it.
 
-Every operation has the same call shape — `op(request, options?)`, one **flat, channel-blind** request object first and `RequestOptions` (`{ signal, retry, logging }`) second — and returns `ApiPromise<T, E>`, or `Pageable<TPage, TItem, E>` for a paged operation. No operation is paged — every one of them is a single request.
+Every operation has the same call shape — `op(request, options?)`, one **flat, channel-blind** request object first and `RequestOptions` (`{ signal, retry, logging, hooks }`) second — and returns `ApiPromise<T, E>`, or `Pageable<TPage, TItem, E>` for a paged operation. No operation is paged — every one of them is a single request.
 
 ⚠ **The request type name is not uniformly `<Operation>Request`.** 2 operations take `<Operation>RequestParams` instead: `enableTokenThreeDs`, `createCustomerId`. Take the name from the operation's **Signature** bullet on its map page; never construct it from the method name.
 
@@ -138,7 +138,8 @@ Open the one file the map's **Type sources** table names — never derive the pa
 | `ApiPromise`, `ApiResult`, `.asApiResult()`, the `Symbol.species` behaviour | `src/core/api-promise.ts` |
 | `Pageable` and `PageableApiResult` — the lazy walk a paged operation returns, `.pages()`, and `.asApiResult()` on a walk | `src/core/pagination/pageable.ts` |
 | The four paging states — offset, page, cursor and link — and the stop rule each applies | `src/core/pagination/states/offset-state.ts`, `src/core/pagination/states/page-state.ts`, `src/core/pagination/states/cursor-state.ts`, `src/core/pagination/states/link-state.ts` |
-| `RequestOptions` (it is `{ signal, retry, logging }` and nothing else) | `src/core/api-request.ts` |
+| `RequestOptions` (it is `{ signal, retry, logging, hooks }` and nothing else) | `src/core/api-request.ts` |
+| `HookOptions`, `BeforeRequestHook`, `AfterResponseHook`, `HookContext` | `src/core/hooks.ts` |
 | `RetryOptions` and its defaults, `RequestRetryOptions`, backoff, `Retry-After`, `RetryAttempt` | `src/core/retry.ts` |
 | `LoggingOptions` and its defaults (`defaultLoggingOptions`), `RequestLoggingOptions`, `Logger`, `LogDetails` | `src/core/logging.ts` |
 | Schema decode/encode, `SchemaError`, `Encoded<T>` | `src/core/validation/schema-error.ts` and its directory |
@@ -183,15 +184,16 @@ Before you write the code for each step, load the named companion skill — even
 Beyond the usual signatures and model members, a contract sheet for the Univapay Public API TypeScript SDK is incomplete without these, because each one is a decision the implementer cannot make correctly from the signature alone.
 
 1. **Which host each deployment talks to**, and where that is set. Any host but the one this SDK knows is a `serverOptions` base-URL override (see *Hosts*) — give the override path on the sheet.
-2. **4 operations resolve to `undefined` (`transactionTokens.deleteTransactionToken`, `subscriptions.cancelSubscription`, `webhooks.deleteWebhook`, `directDebit.deleteDirectDebitBankTransfer`)** — `await` gives you nothing to inspect, so **`.asApiResult()` is the only way to observe their status and headers** — decide the mode at write time, not by retrofit.
+2. **5 operations resolve to `undefined` (`charges.captureCharge`, `transactionTokens.deleteTransactionToken`, `subscriptions.cancelSubscription`, `webhooks.deleteWebhook`, `directDebit.deleteDirectDebitBankTransfer`)** — `await` gives you nothing to inspect, so **`.asApiResult()` is the only way to observe their status and headers** — decide the mode at write time, not by retrofit.
 3. **The exact request type name per operation**, taken from the **Signature** bullet — 2 operations take `<Operation>RequestParams`, not `<Operation>Request`.
-4. **Every request field with its channel, wire name and default**, because the request object is flat and channel-blind and the SDK fans fields out. An omitted field that has a default is still sent with that default, so a defaulted header shapes the response whether or not the sheet mentions it. Every non-GET operation sends an `Idempotency-Key` header, minted once per call and invisible to you, unless it takes that header as a request field — `typescript-configuration-resilience` has what that key does and does not deduplicate. Any caller-supplied idempotency or request-id field is the only idempotency that spans calls, and `RequestOptions` is `{ signal, retry, logging }` only.
+4. **Every request field with its channel, wire name and default**, because the request object is flat and channel-blind and the SDK fans fields out. An omitted field that has a default is still sent with that default, so a defaulted header shapes the response whether or not the sheet mentions it. Every non-GET operation sends an `Idempotency-Key` header, minted once per call and not on the request object, unless it takes that header as a request field — `typescript-configuration-resilience` has what that key does and does not deduplicate. Any caller-supplied idempotency or request-id field is the only idempotency that spans calls, and `RequestOptions` is `{ signal, retry, logging, hooks }` only; a call's `beforeRequest` hook sees the minted key and can replace it.
 5. **Required vs optional vs required-nullable** for every model member the task sets — `f: T` required, `f?: T` omit the key, `f: T | null` required and nullable.
 6. **The error arms for each operation in scope, with the status each covers — and the warning that arm tags are schema-derived, not status codes.** Every operation rejects with its own `ApiError` subclass narrowed on `err.payload.kind`. A tag comes from the arm's body schema and is resolved per operation, so the same tag means different statuses on different operations, and a shared helper that switches on `kind` across operations is a bug — `typescript-error-handling` has the naming rule, the always-present `"undeclared"` arm and the matcher precedence. 73 of 76 operations declare typed error bodies; the rest reject with the base `ApiError`.
 7. **That a malformed or drifted 2xx body rejects with `DecodeError`, not `ApiError`, in both response modes** — and the members the implementer has to assert on, because a thin or truncated body decodes without complaint.
 8. **The retry policy this integration needs.** Retrying is on by default — `ClientOptions.retry` sets it for the client and `RequestOptions.retry` overrides it per call — so the sheet says whether the defaults fit, which writes (if any) join `httpMethodsToRetry`, since a write is repeated only when the policy names its method, and the per-attempt timeout.
 9. **The logging this integration needs.** Logging is off by default — `ClientOptions.logging` sets it for the client and `RequestOptions.logging` sets one call's level — so the sheet says whether it stays off and, where it is on, the level, the logger, and whether headers and the request body are logged (**Sensitive data**, above).
-10. **That the SDK performs no streaming at all**, and that `ClientOptions.fetch` is the one seam where it can be added — so whatever the task needs there is yours to build or deliberately omit. Say which.
-11. **That no operation is paged** — every call is one request, so any list the task pages is driven by hand, with a bound of its own.
-12. A **REQUIRED READING** block naming the `typescript-*` companions that govern the steps, with inline `MUST load` pointers.
+10. **The hooks this integration needs, if any.** There are none by default — `ClientOptions.hooks` runs on every call and `RequestOptions.hooks` adds to them for one call — so the sheet names each header, trace or metric the task puts on the wire or reads off it, which list it goes in (`beforeRequest` or `afterResponse`), and whether it is client-wide or per call.
+11. **That the SDK performs no streaming at all**, and that `ClientOptions.fetch` is the one seam where it can be added — so whatever the task needs there is yours to build or deliberately omit. Say which.
+12. **That no operation is paged** — every call is one request, so any list the task pages is driven by hand, with a bound of its own.
+13. A **REQUIRED READING** block naming the `typescript-*` companions that govern the steps, with inline `MUST load` pointers.
 
