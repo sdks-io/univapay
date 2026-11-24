@@ -151,7 +151,7 @@
 
 ## `GET /stores/{storeId}/subscriptions/{subscriptionId}/charges/latest` (`getSubscriptionLatestCharge`)
 
-- **loud**, state/errors: No charge has been attempted yet for the subscription → 404. **Do:** Treat 404 from the latest-charge call as no charge yet, not as a missing subscription. *(spec `spec/openapi.yaml`; `getSubscriptionLatestCharge.1`)*
+- **loud**, state/errors: No charge has been attempted yet for the subscription → 404 Empty body (no JSON), which the SDK reports as a decode error. **Do:** Treat a 404 (with an empty body) from the latest-charge lookup as "no charge yet", not as a failure. *(spec `spec/openapi.yaml`; docs `content/tested/sandbox-api-behaviour.md`; `getSubscriptionLatestCharge.1`)*
 
 ## `PATCH /stores/{storeId}/subscriptions/{subscriptionId}/suspend` (`suspendSubscription`)
 
