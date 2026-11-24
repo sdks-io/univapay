@@ -40,6 +40,23 @@ shapes:
 | OAuth 2 password | `OAuth2PasswordCredentials` | `Authorization: Bearer {fetched token}` |
 | OAuth 2 authorization code | `OAuth2AuthorizationCodeCredentials` | `Authorization: Bearer {fetched token}` |
 
+## Environment variables
+
+Every credential member except the authorization-code grant has environment variables, and the
+client reads them **once, when it is built**, for each member you leave unset. A name is the API's
+name and the member's, in upper snake case: one variable for a token or key, and one per field for
+basic auth (`…_USERNAME`, `…_PASSWORD`) and the client-credentials and password grants (`…_CLIENT_ID`,
+`…_CLIENT_SECRET`, `…_SCOPE`, plus `…_USERNAME` and `…_PASSWORD` for the password grant). Each
+member's TSDoc in `src/client-options.ts` names its own, as does the getting-started skill's auth
+table — read them there rather than guessing.
+
+- A value set in code always wins, including a placeholder copied from a sample.
+- A variable that is unset, empty or whitespace counts as unset.
+- A credential with several fields is read only when every required field's variable is set; otherwise
+  the member stays unset, and a call that needs it is refused with `AuthError`.
+- Changing a variable after the client is built does not reach that client.
+- In a browser there is no `process.env`, so nothing is read.
+
 ## Basic auth
 
 ```ts
@@ -99,7 +116,9 @@ const client = new {Api}Client({
 ```
 
 There is no caching around your callback — if the lookup is expensive, cache inside the callback. An
-empty string counts as **absent** and the scheme sends nothing, so guard against a blank env var.
+empty string counts as **unset**, so a call that requires the scheme is refused with `AuthError`; a
+function counts as configured without being called, and one that returns nothing or an empty string
+fails that call with `AuthError` rather than sending it without the credential.
 
 > **The next five sections apply only when the SDK declares an OAuth 2 scheme.** The three grants, the
 > token lifecycle, and the token-fetch failure mode describe machinery that exists only if
@@ -119,7 +138,12 @@ const client = new {Api}Client({
 ```
 
 The SDK fetches and caches the token itself, acquiring a fresh one when it expires; on a `401` it
-invalidates the cached token and re-acquires on the next call.
+drops that token and sends the call once more with a fresh one.
+
+**Each operation asks for the scopes it declares.** Leave `scope` unset and every call requests the
+scopes its operation's requirement lists — the operation's **Auth** bullet names them — and the SDK
+keeps one token per scope set. Setting `scope` requests that one value for every call and keeps a
+single token.
 
 `scope` is a **single space-delimited string**, not a list — you join it yourself, per RFC 6749 §3.3.
 An empty string is treated as absent and no `scope` field is sent. It is typed plain `string` — **no
@@ -155,6 +179,8 @@ The URL handed to your callback carries `response_type=code`, `client_id`, `redi
 `code_challenge_method`. The matching `code_verifier` is sent on the token exchange automatically; you
 never see or manage it.
 
+- **`scope` defaults to every scope the grant declares.** The grant keeps one token, so set `scope`
+  only to narrow it.
 - **`promptForAuthorizationCode` is called lazily**, on the first request needing the scheme — the
   same point at which the other grants fetch their token. For a server app, see *Supplying your own
   token source* below.
@@ -210,6 +236,10 @@ const client = new {Api}Client({
 });
 ```
 
+The password is sent once: a token that came with a refresh token is renewed through it, and the
+password goes out again only when that refresh is refused. Leave `scope` unset and the one token
+requests every scope the grant declares; set it to narrow that.
+
 ## Token caching & refresh (all OAuth 2 grants)
 
 - Tokens are cached **in memory, per client instance**, and reused until **30 s** before expiry, or
@@ -227,24 +257,24 @@ const client = new {Api}Client({
   first.
 - **The cache lives in the client object.** Build the client once (see
   `typescript-client-initialization`) or every call re-runs the grant.
-- **Only the authorization-code grant refreshes.** Client-credentials and resource-owner-password
-  re-run the whole grant when the token expires, and a `refresh_token` in a password-grant response is
-  **discarded** — do not infer refresh behaviour from what the provider returns. A refresh response
-  that omits `refresh_token` keeps the previous one, and a failed refresh does not throw: it falls back
-  to a full re-grant.
-- On `401`, the cached token is invalidated and re-acquired on the **next** call — `401` is not in the
-  default `statusCodesToRetry`, so the failing request is **not** re-sent; handle it as an ordinary
-  `ApiError` (see `typescript-error-handling`). Add `401` to `statusCodesToRetry` to have the failing
-  call re-sent with a fresh token — every attempt resolves its credential again. A static key is
-  re-sent unchanged, so that only helps a scheme that fetches its credential.
-- **Invalidation is a hint, not a barrier.** It clears the cache without cancelling a token fetch
-  already in flight, so that fetch can complete and re-populate it; "invalidate, then read" does not
-  guarantee a fresh token.
+- **The password and authorization-code grants refresh; client credentials re-runs its grant.** An
+  expired token is renewed through the refresh token the last response carried. A refresh response
+  that omits `refresh_token` keeps the previous one, and a refused refresh does not throw: it falls
+  back to the full grant.
+- **A `401` re-authenticates once.** On a `401` to a call authenticated through an OAuth 2 grant, the
+  SDK drops the token that call carried and sends the call once more with a fresh one. That one
+  re-send is outside `retry.maxRetries` and the method list, gets the whole retry budget again, and is
+  not reported to `onRetry`; a second `401` rejects as an ordinary `ApiError` (see
+  `typescript-error-handling`). A call whose body is a stream is not re-sent, but its `401` still drops
+  the token. A static key's `401` rejects at once. Adding `401` to `statusCodesToRetry` retries it
+  within each pass too, so a dead OAuth 2 credential costs up to 2 × (`maxRetries` + 1) requests.
+- **The drop is precise.** Only the token the rejected request carried is dropped, so a `401` that
+  arrives after another call already fetched a newer token leaves that token in place. It does not
+  cancel a token fetch already in flight.
 
-⚠ **A `401` on the authorization-code grant is an interactive re-authorization, not a silent
-refresh.** Invalidation clears the whole cached token, refresh token included, so "re-acquired" means
-the *full* grant runs again and `promptForAuthorizationCode` fires. Expiry takes the refresh path; a
-`401` does not. Plan for that in a non-interactive host.
+**A `401` on the authorization-code grant refreshes; it does not prompt.** The refresh token survives
+the `401`, so the re-send obtains its token through a refresh, and `promptForAuthorizationCode` fires
+only when the refresh is refused or no refresh token was issued.
 
 **A short-lived token is renewed halfway through its lifetime.** The 30-second buffer applies to a
 token issued for a minute or more; below that, the token is reused for half its `expires_in` — a 20 s
@@ -254,34 +284,46 @@ round-trip per half-lifetime rather than one per call.
 ⚠ **A token response without a positive `expires_in` never expires in the cache** — the first token
 is kept for the life of the client and only a `401` replaces it, so a token revoked server-side is
 sent until a request fails with it. For proactive rotation, supply your own token strategy (below).
+An `expires_in` sent as a string of digits, as some providers send it, is read as that number; any
+other string is a token response the SDK cannot read.
 
 ### Supplying your own token source
 
 The token strategy is a public extension point: alongside each OAuth 2 credentials member the options
 type exposes a **`{scheme}Strategy`** member, typed `OAuth2TokenStrategy<{CredentialsType}>` (or
-`OAuth2RefreshableTokenStrategy<…>` for the authorization-code grant), and the generated client falls
-back to the built-in strategy only when you leave it unset.
+`OAuth2RefreshableTokenStrategy<…>` for the password and authorization-code grants), and the generated
+client falls back to the built-in strategy only when you leave it unset.
+
+**A strategy replaces the token request, not the credentials.** The scheme counts as configured only
+when its `{scheme}` member is set, so a strategy supplied without it is refused with `AuthError` like
+any unset credential. Set the credentials too, even when your strategy ignores them.
 
 ```ts
 const client = new {Api}Client({
   {scheme}: { /* the same credentials object */ },
   {scheme}Strategy: {
-    async getToken(credentials, signal) {
-      const stored = await tokenStore.load();
+    async getToken(credentials, signal, scope) {
+      const stored = await tokenStore.load(scope);
       if (stored) return stored;                       // { accessToken, tokenType, expiresIn?, … }
-      const fresh = await mintTokenSomehow(credentials, signal);
-      await tokenStore.save(fresh);
+      const fresh = await mintTokenSomehow(credentials, scope, signal);
+      await tokenStore.save(scope, fresh);
       return fresh;
     },
-    // Authorization-code grant only — return null to fall back to a full re-grant:
-    async tryRefreshToken(credentials, refreshToken, signal) {
+    // Password and authorization-code grants only — return null to fall back to a full re-grant:
+    async tryRefreshToken(credentials, refreshToken, signal, scope) {
       const refreshed = await refreshSomehow(credentials, refreshToken, signal);
-      if (refreshed) await tokenStore.save(refreshed);
+      if (refreshed) await tokenStore.save(scope, refreshed);
       return refreshed ?? null;
     },
   },
 });
 ```
+
+`scope` is the space-delimited scopes this token is for: your own `scope` when you set one, otherwise
+the ones the operation or the grant declares, and `undefined` when there are none. Key anything you
+store by it: a client-credentials scheme asks for one token per scope set. Read the scopes from this
+argument, not from `credentials.scope`, which holds only what you set. `credentials` is the object you
+configured, never a copy, so a credentials class keeps its getters and methods.
 
 Reach for it when the token must come from somewhere other than the SDK's own call to the token
 endpoint — a cache shared across processes, a secrets broker, a sidecar that already holds a valid
@@ -298,6 +340,27 @@ the two interfaces it takes.
 token out of band, store it, and let `getToken` read the store — otherwise a cache miss under load
 turns into a redirect attempt inside a request.
 
+### A token you already hold
+
+When the API is modelled as OAuth 2 but your app already holds an access token — issued by another
+service, or pasted in for a test — return it from a strategy, and set the credentials member to
+placeholder values the strategy never reads:
+
+```ts
+const client = new {Api}Client({
+  {scheme}: { clientId: "unused", clientSecret: "unused" },   // the shape {CredentialsType} requires
+  {scheme}Strategy: {
+    getToken: async () => ({ accessToken: process.env.ACCESS_TOKEN!, tokenType: "Bearer" }),
+  },
+});
+```
+
+Fill whatever members your grant's credentials type requires — a password grant needs `username`
+and `password`, an authorization-code grant `redirectUri` and `promptForAuthorizationCode` — and add
+`tryRefreshToken: async () => null` for those two grants, whose strategy type requires it. With no
+`expiresIn` the token is reused until a `401` drops it; the call's one re-send then asks `getToken`
+again, so return a fresh token there if you can get one.
+
 ## The failure mode that surprises everyone
 
 A token endpoint that answers `400 invalid_client` rejects the *operation* call with `AuthError` — its
@@ -307,22 +370,29 @@ and `.asApiResult()` does not convert it. Catch it around every authenticated ca
 
 ## Combined / multiple schemes
 
-An operation can require more than one scheme, or any one of a set. The composition is applied for you
-by `allAuth(...)` / `anyAuth(...)`; you configure it by setting the relevant credential members.
+An operation can require more than one scheme, or any one of a set, and can also admit callers with
+no credential at all. The composition is applied for you by `allAuth(...)`, `anyAuth(...)` and
+`orAnonymous(...)`; you configure it by setting the relevant credential members.
 
 - **AND (`allAuth`)** — every scheme resolves and their headers, query params and cookies are all
-  sent. If one has no credential it contributes nothing, and the request goes out **partially
-  authenticated** rather than failing.
-- **OR (`anyAuth`)** — the **first** scheme in declaration order that has credentials is used and the
-  rest are ignored. So which credential is sent depends on declaration order in `src/auth-schemes.ts`,
-  not on which looks more specific. A `SecretProvider` **function** always counts as "has credentials",
-  even if it returns an empty string — so a function provider always wins the OR.
+  sent. If any of them is unset the call is refused with `AuthError` naming every missing one, and
+  nothing goes out.
+- **OR (`anyAuth`)** — the configured schemes are tried in declaration order and the first that
+  resolves is sent, so which credential goes out depends on declaration order in
+  `src/auth-schemes.ts`, not on which looks more specific. A configured scheme that fails — a refused
+  token endpoint, a `SecretProvider` function that returns nothing — falls through to the next. When
+  none is configured the call is refused with `AuthError` listing each alternative. A `SecretProvider`
+  **function** counts as configured without being called.
+- **OR anonymous (`orAnonymous`)** — the spec also lists an empty requirement, so the operation admits
+  anonymous callers: the credential is sent when it is configured, and the call goes out without one
+  when it is not. This is the only way an operation with a requirement is sent bare.
 
 Because composition is **per operation**, one client may authenticate different operations with
 different schemes — so set every member the operations your integration actually calls need, not just
 the ones the API's front page advertises. The per-operation requirement is the **Auth** bullet on the
 operation's block in `map/operations/*.md` (and in `api-reference.md`), which spells the composition
-out: `` `{scheme}` ``, `all of …`, or `any of … — the first one configured is sent`.
+out: `` `{scheme}` ``, `all of …`, `any of … — the first one configured is sent`, and a requirement
+that also admits anonymous callers ends `or anonymous`.
 
 ## No auth
 
@@ -334,20 +404,17 @@ even when every option member is filled**, and nothing you pass at construction 
 Every section above covers supplying a credential. This one covers its **absence** — the case a
 configuration-driven app hits in the real world, and the one most integrations get wrong.
 
-**Every credential member is optional and an unset one does not throw.** The operation that wanted it
-simply sends no credential, and you get whatever the API answers — typically a `401`, surfacing as an
-`ApiError`, not as an auth failure. The SDK will never tell you that you forgot to supply a
-credential; only the provider will, one round-trip later and one layer away from the cause. A
-"mysterious 401" is very often an unfilled option member — check that before suspecting the
-credentials themselves.
+**Every credential member is optional at construction and required at the call.** The client builds
+without it; a call whose operation requires it rejects with `AuthError` naming the option to set,
+before anything is sent. The one exception is an operation that also admits anonymous callers (its
+**Auth** bullet ends `or anonymous`), which goes out without the credential. So a `401` means the API rejected the credential that went out, not that one
+was missing. But the refusal comes per call, not at startup: an app missing a credential boots, and
+fails on the first request that needs it.
 
-An API that serves anonymous traffic at all — public endpoints, or a reduced rate limit for keyless
-callers — makes this worse by answering `200` and hiding the omission entirely. So verify the member
-is actually set rather than waiting for a `401` to tell you.
-
-**A required credential that is not configured is a deployment fault, not a request fault.** There is
-no `.env` support and no `fromEnvironment()` helper in the SDK, so **validate every required
-credential in your startup path and refuse to boot** — not lazily on first use, which is a request.
+**A required credential that is not configured is a deployment fault, not a request fault.** The SDK
+reads its own environment variables but loads no `.env` file and checks nothing at construction, so
+**validate every required credential in your startup path and refuse to boot** — not lazily on first
+use, which is a request.
 The factory in **typescript-client-initialization** shows the shape.
 
 Three rules for the message it fails with:
@@ -383,7 +450,8 @@ absent, so a blank env var is the same fault as an unset one.
   secret containing a character RFC 6749 §2.3.1 would have you encode is sent raw, so a provider that
   follows the RFC strictly may reject it — use body placement or a custom strategy if your secret is
   not in the unreserved set.
-- `AuthError` (a credential could not be *obtained*) versus a 401/403 `ApiError` (refused by the API):
+- `AuthError` (a credential is not configured or could not be *obtained*) versus a 401/403 `ApiError`
+  (refused by the API):
   **typescript-error-handling**.
 - A token endpoint may live on its own server group, so redirecting the operations' group at a mock
   does not move it (**typescript-configuration-resilience**).

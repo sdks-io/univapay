@@ -8,9 +8,10 @@ description: Load before constructing or tuning an APIMatic-generated TypeScript
 > Which server groups, environments, template variables, page/cursor fields and idempotency-key
 > fields YOUR SDK has comes from `sdk-map.md` and `map/operations/{resource}.md` at the package root —
 > **apply only the guidance that matches**. `{...}` marks a name to take from your SDK; `{Api}Client`
-> is the one public client class, in `src/client.ts`. `{APICLIENTTYPENAME}_LOG` is the logging
-> environment variable: the client class name in upper snake case, plus `_LOG`, so `AcmeClient` reads
-> `ACME_CLIENT_LOG`. The getting-started skill's identity table names yours.
+> is the one public client class, in `src/client.ts`. `{API}_LOG` is the logging environment
+> variable: the API's name in upper snake case, plus `_LOG` — the prefix the credential variables
+> carry — so an API titled *Acme API* reads `ACME_API_LOG`. The getting-started skill's identity table
+> names yours.
 
 Everything configurable is a field on `ClientOptions` (`src/client-options.ts`), passed to the one
 constructor. There is no `Configuration` class, no builder, and no per-request override beyond
@@ -238,8 +239,9 @@ For a proxy, see *Proxy or custom agent* below.
   backing off roughly 1 s, 2 s and 4 s, and honouring `Retry-After`.
 - A `POST`, `PATCH` or `DELETE` is sent **once**, whatever went wrong. The method gate covers every
   failure, faults included.
-- **A `401` is not in the default status set**: the failing call rejects, and the *next* call
-  re-acquires a fetched credential (**typescript-authentication**).
+- **A `401` is not in the default status set.** A call authenticated through an OAuth 2 grant is
+  still sent once more with a fresh token, outside `maxRetries` and the method gate; a static
+  credential's `401` rejects at once (**typescript-authentication**).
 
 Its defaults live in `src/core/retry.ts`. Configure it with any subset of `RetryOptions` — a field you
 leave out keeps its default:
@@ -689,7 +691,7 @@ How it turns on — the first row that applies wins:
 | --- | --- |
 | `logging.logger` | everything the switches allow, at `debug` unless `level` says otherwise — your logger's own level does the filtering |
 | `logging.level`, and no `logger` | lines at that level and above, to `console` |
-| neither, and `{APICLIENTTYPENAME}_LOG` holds a level | see the warning below |
+| neither, and `{API}_LOG` holds a level | see the warning below |
 | nothing | nothing — `level` is `"off"` |
 
 What it writes, and at which level. The SDK filters by level itself, then calls your logger's method of
@@ -749,7 +751,7 @@ logs. Leave it off in production; turn it on for one endpoint at a time
 behind a flag you can prove is off.
 
 ⚠▶▶ **An environment variable turns logging on without a code change.** When code sets neither a
-`logger` nor a valid `level`, the client reads `{APICLIENTTYPENAME}_LOG` once, as it is built, through
+`logger` nor a valid `level`, the client reads `{API}_LOG` once, as it is built, through
 `process.env` — a runtime without `process` reads nothing. It takes a level name (`error`, `warn`,
 `info`, `debug`, or `off`) and writes to `console`. `debug` also turns **both header switches** on; the
 request body it never turns on — only code can. A value that is not a level warns once on `console`,
@@ -781,7 +783,7 @@ passed it.
 On a **successful** call the SDK returns only the decoded body — it never surfaces the request URL, the
 verb or the status. So a wrong verb, a mis-serialized path segment or a dropped query parameter
 **compiles cleanly** and produces no in-band signal; the only symptom is a runtime `404` or `422`. Turn
-logging on at `info` for the first execution of any new call — `{APICLIENTTYPENAME}_LOG=info`, or
+logging on at `info` for the first execution of any new call — `{API}_LOG=info`, or
 `logging: { level: "info" }` — and check five things in its `sending` line:
 
 1. The **verb** matches the operation's **Wire** bullet in `map/operations/{resource}.md`.
@@ -898,7 +900,7 @@ client costs under OAuth — is **typescript-client-initialization**.
 | calls never time out | a `fetch` replacement that does not forward the `Request`, or its `signal` |
 | a header added in a `fetch` wrapper arrives, but every call is now a `401` | the wrapper passed `{ headers }` as `init`, which replaces the SDK's headers — set it in a `beforeRequest` hook, or copy the `Request` (*Header injection*) |
 | a `DecodeError` whose cause says the body is unusable, after adding an `afterResponse` hook | the hook read the body — read `response.clone()` instead (*Hooks*) |
-| request lines in the logs with no logging code | `{APICLIENTTYPENAME}_LOG` is set in that environment — set `logging.level` in code to own it |
+| request lines in the logs with no logging code | `{API}_LOG` is set in that environment — set `logging.level` in code to own it |
 | a JSON body or a card number in the logs | `logRequestBody`, or a per-call `level`, which turns the body on — see *Logging* |
 | a failing call takes seconds longer to reject than the first failure | expected on an idempotent call: the default policy retried it — watch it with `retry.onRetry` |
 | a page walk never ends | no provider-independent bound — see *Never leave a page walk unbounded* |

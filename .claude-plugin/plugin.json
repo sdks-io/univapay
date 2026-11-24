@@ -1,7 +1,7 @@
 {
   "name": "univapay",
   "displayName": "Univapay API",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "description": "Integrate and consume the APIMatic-generated Univapay Public API SDK — bundled skills for TypeScript.",
   "author": {
     "name": "Muhammad Ali Usman"

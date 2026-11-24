@@ -88,12 +88,16 @@ function clientReturning(...responses: Response[]) {
 runs out on the second attempt. Leave it on every test client that is not *about* retrying.
 
 **Logging is off unless the environment turns it on.** A test client with no `logging` reads
-`{APICLIENTTYPENAME}_LOG` (the client class name in upper snake case, plus `_LOG`) like any other, so a CI job
-that exports it fills the test output with request lines. Set `logging: { level: "off" }` where that
-matters, or pass a `logger` that records its calls when the test is *about* what gets logged.
+`{API}_LOG` (the API's name in upper snake case, plus `_LOG`, as the getting-started skill's identity
+table names it) like any other, so a CI job that exports it fills the test output with request lines.
+Set `logging: { level: "off" }` where that matters, or pass a `logger` that records its calls when the
+test is *about* what gets logged.
 
-`Response` is global on Node 18+. Credentials can be dummy values, or omitted entirely — nothing
-validates them when the transport is stubbed, unless the test is *about* the credential.
+`Response` is global on Node 18+. **Set every credential the tested operations need, to dummy
+values.** Nothing checks them when the transport is stubbed, but one left out is refused with
+`AuthError` before the stub sees the request — and is first read from the SDK's environment
+variables, so a stray variable on a developer machine or in CI would put a real credential into a unit
+test, or change which alternative an OR requirement sends.
 
 **Fake `fetch`, not the client.** A hand-rolled double of `{Api}Client` or a resource class (which you
 cannot construct — **typescript-calling-endpoints**) cannot catch the mistakes that actually happen — a
@@ -463,11 +467,11 @@ Or bypass acquisition entirely with a stub token strategy — a supported extens
 ```ts
 const stubStrategy = {                     // keep it a variable: inline, tryRefreshToken is a type error on the other grants
   getToken: async () => ({ accessToken: "T", tokenType: "Bearer" }),
-  tryRefreshToken: async () => null,       // the authorization-code grant requires it
+  tryRefreshToken: async () => null,       // the password and authorization-code grants require it
 };
 
 const client = new {Api}Client({
-  {scheme}: { clientId: "id", clientSecret: "secret" },   // still required — the scheme is off without it
+  {scheme}: { clientId: "id", clientSecret: "secret" },   // still required — without it the call is refused
   {scheme}Strategy: stubStrategy,
   fetch: stub.fetch,
 });
@@ -566,8 +570,9 @@ unless you mean to.
   `Response` needs no `content-type` header; setting one is harmless documentation. What matters is
   that the body parses and satisfies the schema. A binary response is the exception: its result
   reports `content-type` and the `content-disposition` file name, so stub them when your code reads them.
-- A stubbed `401` invalidates the cached OAuth token, so the *next* call in the same test fetches a new
-  one — queue another `tokenResponse()` for it.
+- A stubbed `401` on an OAuth 2 call drops the cached token, and the SDK sends the call once more
+  with a fresh one — so after the `401`, queue another `tokenResponse()` and the response the re-send
+  should get.
 - **Testing the retry policy itself**: drop `maxRetries: 0`, queue one response per attempt (a queue
   that runs out throws, and the loop retries that as a connection failure), pass `delay: 0`, and count
   requests:

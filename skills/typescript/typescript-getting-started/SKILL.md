@@ -25,7 +25,7 @@ Verified against `package.json` and `sdk-map.md` of the package at version `1.3.
 | Auth | **Bearer token** — set `ClientOptions.jwtToken` |
 | Environments | no selector — one environment; 2 server groups |
 | Base-URL config | `serverOptions.<group>.baseUrl` (`src/servers.ts`) |
-| Log environment variable | `UNIVAPAY_PUBLIC_API_CLIENT_LOG` |
+| Log environment variable | `UNIVAPAY_PUBLIC_API_LOG` |
 | Node floor | `>=20.3` (`engines.node`) |
 | Runtime dependency | `zod` (`^4.1.0`) — the only one |
 | Module format | dual ESM + CommonJS folder dialects (`dist/esm`, `dist/commonjs`) behind one export |
@@ -71,21 +71,19 @@ Consequences to state on every contract sheet that touches configuration:
 
 ## Auth pattern (1 scheme)
 
-Authentication is **per operation**: every operation declares the requirement it enforces and the SDK sends exactly that. Each block on a map page carries an **Auth** bullet, `none` included. There is no client-global switch and no per-call override. 76 of the 76 operations require a credential and 0 are public.
+Authentication is **per operation**: every operation declares the requirement it enforces and the SDK sends exactly that. Each block on a map page carries an **Auth** bullet, `none` included. There is no client-global switch and no per-call override. 76 of the 76 operations declare a requirement and 0 are public.
 
-| `ClientOptions` field | Scheme kind | What the SDK sends |
-| --- | --- | --- |
-| `jwtToken` | Bearer token | `Authorization: Bearer <token>` |
+| `ClientOptions` field | Scheme kind | What the SDK sends | Read from when unset |
+| --- | --- | --- | --- |
+| `jwtToken` | Bearer token | `Authorization: Bearer <token>` | `UNIVAPAY_PUBLIC_API_JWT_TOKEN` |
 
 ```ts
-const client = new UnivapayPublicApiClient({
-  jwtToken: process.env.API_TOKEN!,
-});
+const client = new UnivapayPublicApiClient();
 ```
 
-**Every credential field is optional.** Omit one and the request goes out without it, with no error at construction; the server answers `401`, or `200` if it serves anonymous traffic. On an unexpected `401`, check the operation's **Auth** bullet against the fields you set.
+**A field left unset is read from the environment**, from the variables the table names, once, when the client is built; a value passed to the constructor always wins. **Every credential field is optional at construction, and required at the call.** Leave one unset and the client still builds; a call whose operation requires it rejects with `AuthError` naming the field, before anything is sent. So a `401` means the API rejected the credential that went out — check the operation's **Auth** bullet against the fields you set.
 
-Credential functions, scheme composition, 401 invalidation: `sdk-map.md` § *Servers & auth* and `typescript-authentication`.
+Credential functions, scheme composition, 401 re-authentication: `sdk-map.md` § *Servers & auth* and `typescript-authentication`.
 
 ## Resources
 
@@ -133,7 +131,7 @@ Open the one file the map's **Type sources** table names — never derive the pa
 | `ClientOptions` fields | `src/client-options.ts` |
 | Environments, base URLs, override merging | `src/servers.ts` |
 | Auth scheme wiring, token endpoint, credential placement | `src/auth-schemes.ts`, `src/core/auth/credentials.ts`, `src/core/auth/oauth2-strategies.ts` |
-| The transport: the attempt loop, `fetch` resolution, 401 invalidation, 2xx-vs-error split | `src/core/raw-client.ts` |
+| The transport: the attempt loop, `fetch` resolution, 401 re-authentication, 2xx-vs-error split | `src/core/raw-client.ts` |
 | Error classes and `ErrorKind` | `src/core/errors.ts`, `src/core/api-error.ts` |
 | `ApiPromise`, `ApiResult`, `.asApiResult()`, the `Symbol.species` behaviour | `src/core/api-promise.ts` |
 | `Pageable` and `PageableApiResult` — the lazy walk a paged operation returns, `.pages()`, and `.asApiResult()` on a walk | `src/core/pagination/pageable.ts` |
@@ -163,7 +161,7 @@ Every model's schema const — the value export beside its type — carries `enc
 
 ## Sensitive data — check the request models before you log anything
 
-Whether this API's **request** models carry fields you must never log — card or bank numbers, personal data, message content — is a shape question: each request model's declaring file (the map's **Type sources** table names it) lists every field. If the scope touches such a field: `logRequestBody` stays off, because it logs a JSON request body **verbatim** and masks a form body only by deny-list; no call on those paths passes a per-call `RequestOptions.logging` level, which turns the request body on for that call whatever the client set; `ClientOptions.logging.level` is set explicitly in production, because without a `logger` or a `level` the `UNIVAPAY_PUBLIC_API_CLIENT_LOG` environment variable turns logging and both header switches on with no code change; and your own diagnostics never echo a request body on those paths (`typescript-configuration-resilience` has the details).
+Whether this API's **request** models carry fields you must never log — card or bank numbers, personal data, message content — is a shape question: each request model's declaring file (the map's **Type sources** table names it) lists every field. If the scope touches such a field: `logRequestBody` stays off, because it logs a JSON request body **verbatim** and masks a form body only by deny-list; no call on those paths passes a per-call `RequestOptions.logging` level, which turns the request body on for that call whatever the client set; `ClientOptions.logging.level` is set explicitly in production, because without a `logger` or a `level` the `UNIVAPAY_PUBLIC_API_LOG` environment variable turns logging and both header switches on with no code change; and your own diagnostics never echo a request body on those paths (`typescript-configuration-resilience` has the details).
 
 The SDK never logs a response body, but your own code may. Responses are often safer — many APIs return masked variants of what requests carry raw — but that too is a model-shape fact: check the response model's file before assuming.
 

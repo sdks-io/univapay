@@ -109,8 +109,9 @@ can add its own through `RequestOptions.hooks`; a proxy, TLS or a mock goes in `
 `text/event-stream` response, through an operation that resolves to an `EventStream`
 (**typescript-event-streams**). A `fetch` replacement must forward the `Request` it is handed, or its
 `signal`, or cancellation and timeouts go inert. **Logging is
-built in and off by default**, and the `{APICLIENTTYPENAME}_LOG` environment variable (the client class
-name in upper snake case, plus `_LOG`) can turn it on with no code change
+built in and off by default**, and the `{API}_LOG` environment variable (the API's name in upper
+snake case, plus `_LOG`; the getting-started skill's identity table names yours) can turn it on with no
+code change
 (**typescript-configuration-resilience**).
 
 ## Direct instantiation
@@ -142,7 +143,7 @@ accepted and fails later, one layer from its cause:
 | a `baseUrl` override | first call — as a connection error, or as a `401` against the wrong host |
 | wrong credentials | first call — under OAuth2 as an `AuthError` from that operation, with the token endpoint's `ApiError` on `.cause` (**typescript-error-handling**) |
 | a misspelled or extra credential field | never at run time. Credentials are plain objects checked only by TypeScript; nothing re-validates them at construction |
-| **an omitted** credential | first call, as a `401`. An unset credential configures the client for **no auth** — the operation sends no credential rather than erroring. See **typescript-authentication** |
+| **an omitted** credential | the first call that requires it, as an `AuthError` naming the option to set, before anything is sent. The client builds without it. See **typescript-authentication** |
 
 That last row is the one integrations lose time to, which is why the factory below checks credentials
 before constructing.
@@ -212,22 +213,23 @@ export const client = new {Api}Client({
 ```
 
 ⚠ **A module-level client reads `process.env` at import time**, which under ESM hoisting can precede
-your config loader, `dotenv` or secret fetch. The credential is then `undefined`, which the SDK treats
-as no auth: no startup error, just a `401` on the first call, reading like an expired token. Load
+your config loader, `dotenv` or secret fetch. The credential is then `undefined`: no startup error,
+just an `AuthError` on the first call that needs it. The SDK's own credential variables are read when
+the client is built too, so the same ordering applies to them. Load
 config before anything imports this module, or build the client in a factory called from your startup
 path (below).
 
 ### Building it in a factory
 
 The full shape. **The credential check is not optional to think about** — without it, a missing
-environment variable is invisible until an unrelated `401`:
+environment variable is invisible until the first call that needs it fails:
 
 ```ts
 import { {Api}Client, ServerEnvironment } from "{package-name}";
 
 export function build{Api}Client(): {Api}Client {
   const token = process.env.API_TOKEN;
-  if (!token) throw new Error("API_TOKEN is not set");   // fail at startup, not as a 401 later
+  if (!token) throw new Error("API_TOKEN is not set");   // fail at startup, not on the first call
 
   return new {Api}Client({
     serverEnvironment: ServerEnvironment.{Environment},

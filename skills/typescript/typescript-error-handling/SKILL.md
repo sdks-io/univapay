@@ -304,17 +304,19 @@ a bug in your code (a wrong type, a bad date format), not an API failure. Never 
 let a production ladder quietly absorb it — it should fail loudly in development. Its `cause` is the
 `SchemaError` that rejected the value, and that error's `message` names the field.
 
-## `"auth"` — a credential could not be obtained
+## `"auth"` — a credential is not configured, or could not be obtained
 
-**`AuthError` is about obtaining a credential, not about being refused one.** A 401 *from the API* is
-an `ApiError` like any other status, so one `catch` arm cannot absorb the other.
+**`AuthError` is about having and obtaining a credential, not about being refused one.** A 401 *from
+the API* is an `ApiError` like any other status, so one `catch` arm cannot absorb the other.
 
-A 401 from the API also invalidates the scheme's cached credential, so the **next** call re-acquires
-(**typescript-authentication**). A single `401` is therefore not a permanent credential failure: do not
-tear down the client or alert on one.
+On an operation authenticated through an OAuth 2 grant, a 401 from the API drops the token that call
+carried and the SDK sends the call once more with a fresh one (**typescript-authentication**). So the
+`ApiError` you catch there is a second 401, after a fresh token: the credential itself was refused.
 
-`AuthError` means the token grant failed, every configured branch of an alternatives requirement
-failed, PKCE was disabled without a client secret, or your own authorization-code prompt rejected. Its
+`AuthError` means a credential the operation requires is not configured — its message names the
+option to set, and nothing was sent — or the token grant failed, a credential function returned
+nothing, every configured branch of an alternatives requirement failed, PKCE was disabled without a
+client secret, or your own authorization-code prompt rejected. Its
 `method` and `uri` name **the operation you called**, not the token endpoint. When the grant failed,
 **`.cause` is the token endpoint's own `ApiError`** — that is where the token endpoint's status and
 body are, and the only place a "bad client credentials" diagnosis can be read. Never log an `AuthError`
@@ -555,7 +557,7 @@ if (typeof err === "object" && err !== null && "kind" in err && "uri" in err) { 
 
 - **The SDK logs a failure only when its logging is on**, which it is not by default
   (**typescript-configuration-resilience**) — log what your own code decided in your `catch`.
-- **A missing credential is not an error**: the call goes out without it and the API answers `401`
+- **A missing credential is an `AuthError`**, raised before the send and naming the option to set
   (**typescript-authentication**).
 - **SDK errors do not survive a worker or process boundary intact.** `structuredClone` and
   `postMessage` reduce an `Error` subclass to a plain `Error` — `name`, `message` and `cause` survive;
