@@ -90,8 +90,8 @@ export async function processPending(opts: Pick<ReceiverOptions, "store" | "hand
 }
 
 /** Turn a stopped webhook back on. Returns whether it was active before and after.
- *  Careful (verified live in test mode): a DELETED webhook reads exactly like a switched-off one (`active: false`,
- *  and it is missing from the list), and switching it on brings it back. So call this only for the webhook id your
+ *  Careful: a DELETED webhook reads exactly like a switched-off one (`active: false`, deleteWebhook.1, and it is
+ *  missing from the default list, listWebhooks.2), and switching it on brings it back. So call this only for the webhook id your
  *  app uses now, and pass `expectedUrl` (your receiver's URL): a webhook pointing anywhere else is left alone. */
 export async function ensureWebhookActive(client: UnivapayPublicApiClient, storeId: string, webhookId: string, opts: { expectedUrl?: string } = {}) {
   const w = await client.webhooks.getWebhook({ storeId, id: webhookId });

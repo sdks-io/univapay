@@ -10,24 +10,20 @@ Use this when an app that works in test mode is about to take real payments. It 
   - Don't copy test token ids into live data.
 - **Two places, as in test mode.** The server sends `Bearer {secret}.{jwt}` on every call (`every-request.1`). The browser gets only the app token, for the widget. The app token alone from a server is refused (`getCheckoutInfo.1`). A lost secret means making a new app token (`every-request.5`).
 - **Config per environment:** the server's app token and secret, the browser's app token, the webhook id and auth token, the link form id (test and live link forms differ: `payment-links.md`), and the expected mode. Keep them in environment variables or a secret store, never in code.
-- **The widget's allowed domains are inside the app token** (verified live in test mode):
-  - The app token is a JWT. Its payload has a `domains` list, set in the console when the token is made.
-  - The widget opened on a page whose host was in that list, and on a page whose host was not listed it showed "Cannot run checkout from this domain." (both verified live in test mode). List every host your checkout runs on; wildcard forms were not tested.
-  - We made a new token with the domains on it and used that token text. Editing the list of an existing token was not tested: after any change, check the payload of the token text you deploy.
-  - The browser and the server may use different app tokens of the same store: one with your site's domains for the widget, one with its secret for the server (verified live in test mode).
+- **The widget's allowed domains are inside the app token** (`createTransactionToken.51`): the JWT payload has a `domains` list, set in the console when the token is made, and the widget won't open on a host that isn't in it.
+  - List every host your checkout runs on. Wildcard forms are untested.
+  - Making a new token with the domains on it works; editing an existing token's list is untested. After any change, check the payload of the token text you deploy.
+  - The browser and the server may use different app tokens of the same store: one with your site's domains for the widget, one with its secret for the server (`every-request.33`).
   - Calls with the app token alone are accepted only from UnivaPay's own widget and link-form pages. From any other origin they get 403 with an empty body, even an origin listed in the token's `domains`; with no origin they get 401 `INVALID_DOMAIN` (`getCheckoutInfo.5`, `getCheckoutInfo.1`, `every-request.2`). So your own pages never call the API with the app token: the widget makes its calls from its own frame, and your server uses `{secret}.{jwt}`.
 - **Check the mode and the domains at startup**, so a wrong key fails at deploy and not at checkout:
-  - `client.checkout.getCheckoutInfo()` with the server client returns `mode`. It must equal your config's mode (`getCheckoutInfo.2`; verified live in test mode).
-  - Decode the browser app token's payload and check that your site's host matches its `domains` (verified live in test mode).
+  - `client.checkout.getCheckoutInfo()` with the server client returns `mode`; it must equal your config's mode (`getCheckoutInfo.2`).
+  - Decode the browser app token's payload and check that your site's host is in its `domains` (`createTransactionToken.51`).
 - **Base URL:** `https://api.univapay.com` in both modes (`every-request.9`).
 
 ## Webhooks for live
 
-- **Create the live webhook** on your production URL with a new auth token (at least 6 characters: `createWebhook.3`), and store its id (`webhooks.md`).
-  - One webhook per URL (`createWebhook.4`).
-  - Use the final HTTPS URL: a redirect stops the webhook (`background.14`).
-  - Test mode accepted `http://localhost`, so a webhook that "worked" in test mode proves nothing about your live URL (`createWebhook.1`).
-- **Ignore the other mode's events.** We could not test whether a store's webhook receives events from both modes. Your handler already re-reads each resource by GET. Charges and subscriptions read by GET carry `mode` (`test` or `live`; verified live in test mode), so compare it with your environment's mode and ignore the rest.
+- **Create the live webhook** on your final production HTTPS URL with a new auth token, as in `webhooks.md` (Before you start), and store its id. Test mode accepts `http://localhost`, so a webhook that "worked" in test mode proves nothing about your live URL (`createWebhook.1`).
+- **Ignore the other mode's events.** Whether a store's webhook receives events from both modes is untested. Your handler already re-reads each resource by GET, and charges and subscriptions carry `mode` (`test` or `live`): compare it with your environment's mode and ignore the rest.
 - **Switch on the monitoring job from day one:** the `active` check and your own reply-time and failure logs (`webhooks.md` step 9). Know where the catch-up runbook is (`recovery-runbooks.md` (a)).
 - **After launch,** make one small real payment and check that the webhook arrives, the order is paid from a GET, and your logs show the reply in under 3 seconds (`background.11`).
 

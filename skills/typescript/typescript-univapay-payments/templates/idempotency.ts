@@ -8,11 +8,12 @@
 // - The same key on a different resource or operation is refused with IDEMPOTENCY_KEY_CONFLICT (every-request.23).
 // - When you pass no `idempotencyKey`, the SDK sends NO key for calls that take one (createCharge, createRefund, …),
 //   so an app-level retry runs the write again and can charge twice. Always pass `idempotencyKey`.
-//   (Calls without that field, e.g. deleteTransactionToken, get a new random key each time.) (verified)
-// - Capture and cancel IGNORE the key (verified live in test mode): a repeat with the same
+//   (Calls without that field, e.g. deleteTransactionToken, get a new random key each time.) (SDK, tested)
+// - Capture and cancel IGNORE the key (captureCharge.16, createCancel.14): a repeat with the same
 //   key is refused (ALREADY_CAPTURED, CANCEL_NOT_ALLOWED), not replayed. Stop double clicks in your app, and on those
 //   errors re-read the charge: it was probably done by the first click.
-// - A replayed refund returns the FIRST reply (still `pending` even after it succeeded): read the status with a GET.
+// - A replayed refund returns the FIRST reply (still `pending` even after it succeeded): read the status with a GET
+//   (createRefund.23).
 import { createHash } from "node:crypto";
 import { readUnivapayError, type UnivapayFailure } from "./univapay-errors.js";
 

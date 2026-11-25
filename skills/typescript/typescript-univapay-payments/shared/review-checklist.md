@@ -18,12 +18,14 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 - **Fulfilment on `charge_updated`.** It fires for `authorized` (a hold) and `awaiting` (not paid yet). Fulfil only on a GET that says `successful`. `background.20`, `createCharge.21`, `createCharge.31`
 - **Error replies for events the app doesn't handle**, or a thrown error that becomes a 4xx/500 reply. These switch the webhook off. `background.15`
 - **A redirect on the webhook route** (HTTP→HTTPS, a trailing slash, auth middleware). `background.14`
-- **No check that the event belongs to this app**: no lookup by `data.metadata.order_id` or by stored id, so other apps' events are acted on. (Every webhook on the store gets every event: verified live in test mode.)
+- **No check that the event belongs to this app**: no lookup by `data.metadata.order_id` or by stored id, so other apps' events are acted on. `background.76`
+- **Events matched with the SDK's `parseUnivapayPublicApiWebhookEvent` guards** (`isRefundFinished()`, `isSubscriptionPayment()`, …): all but the two charge guards compare camelCase names and never match the real snake_case events, so those events are silently ignored. Switch on the raw `event` string, as `webhook-receiver.ts` does. (SDK, tested)
 - **`express.json()` mounted before the webhook route**: the raw body is lost.
 - **The webhook object or the `Authorization` header is logged.** `createWebhook.8`
 - **No way back from a switched-off webhook**: no stored webhook id, no `active` check, no catch-up job. `background.17` (`recovery-runbooks.md` (a))
 - **Catch-up built on `listWebhookEvents`.** It answers 401 to a store app token. `listWebhookEvents.1`
-- **`ensureWebhookActive` run on a timer for every webhook id in the config, or without `expectedUrl`**: a deleted webhook reads like a switched-off one, and switching it on brings it back (verified live in test mode). Call it only for the id in use now, with `expectedUrl`.
+- **`ensureWebhookActive` run on a timer for every webhook id in the config, or without `expectedUrl`**: a deleted webhook reads like a switched-off one, and switching it on brings it back. Call it only for the id in use now, with `expectedUrl`. `deleteWebhook.1`
+- **A missing entry in the webhook list taken as "no webhook"**: the default list leaves switched-off and deleted webhooks out, and the SDK's boolean `active` filter can't ask for them (SDK, tested). GET by the stored id. `listWebhooks.2`, `listWebhooks.1`
 
 ## Charge status
 
@@ -41,20 +43,22 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 
 - **The amount comes from the request body**, a hidden field or a `data-amount` the server didn't set. Price on the server from your own catalogue or order. (app rule)
 - **"Paid" without matching the charge to the order**: no check of `charge.metadata.orderId` and of the amount and currency (`checkLinkPayment`). (app rule; `createCharge.26`)
+- **`metadata.order_id` sent as a number** (e.g. `order_id: order.id` with a numeric id, or set by another system). The SDK then fails to read that charge and the whole `listStoreCharges` page, which breaks catch-up. Always send it as a string. (SDK, tested)
 - **A token id from the browser charged or subscribed without a server check**: no `getTransactionToken`, no `type` / `paymentType` / `active` check, no owner check. `createTransactionToken.9`, `createSubscription.9`; charging another customer's card is an app rule.
 - **The secret in browser code or in a payment link**, or server calls made with the app token alone. `every-request.1`, `every-request.8`, `getCheckoutInfo.1`
 - **Payment links made by hand** (in the console or pasted), with no `order_id` from the server, so payments can't be matched to an order. Build links with `buildPaymentLink` (`payment-links.md`). (app rule)
-- **No startup check of the widget's allowed domains** in the app token: the widget then refuses to open on the site (verified live in test mode; `go-live.md`).
+- **No startup check of the widget's allowed domains** in the app token: the widget then won't open on the site (`go-live.md`). `createTransactionToken.51`
 - **`three_ds.mode: "skip"` set from the browser, or without UnivaPay enabling it.** `createCharge.43`, `createSubscription.32`
 
 ## Idempotency and retries (`templates/idempotency.ts`)
 
-- **No `idempotencyKey` on `createCharge`, `createRefund`, `createSubscription` or `createTransactionToken`.** The SDK then sends no key, so a retry or a double click charges twice (verified in a unit test). `every-request.20`, `every-request.21`
+- **No `idempotencyKey` on `createCharge`, `createRefund`, `createSubscription` or `createTransactionToken`.** The SDK then sends no key (SDK, tested), so a retry or a double click charges twice. `every-request.20`, `every-request.21`
 - **A new random key on each retry**, e.g. `randomUUID()` inside the retry loop. Same action → same key. `every-request.21`
+- **A new order made on each tap of "pay"** (e.g. "pay with saved card"): each order has its own key, so a double tap charges twice. Create the order once, before the pay button. (app rule)
 - **One key reused for a different amount or action.** The first result comes back silently, or you get 409. `updateCharge.1`, `every-request.23`
 - **The same key reused after a failed charge**: it returns the old failed charge. A new attempt needs a new key. `every-request.21`
-- **Capture or cancel protected only by the key.** They ignore it, so guard in the app (verified live in test mode).
-- **Status read from a replayed create reply.** It is the first stored reply, e.g. still `pending` (verified live in test mode).
+- **Capture or cancel protected only by the key.** They ignore it, so guard in the app. `captureCharge.16`, `createCancel.14`
+- **Status read from a replayed create reply.** It is the first stored reply, e.g. still `pending`. `createRefund.23`
 - **No branch for `CHARGE_TOO_QUICK` or payment error 311** on repeat charges or subscriptions on one card. Test mode never returns it, so only a unit test catches a missing branch. `createCharge.37`, `createCharge.36`, `createSubscription.25`, `createSubscription.26`
 - **A 400 retried unchanged**, or a 500 retried without first checking what happened. `every-request.11`, `every-request.13`
 
@@ -85,6 +89,8 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 - **No schedule preview before creating a fixed plan.** `simulateSubscriptionPlan.1`
 - **Access given on the 201.** The subscription is `unverified` until the first charge. `createSubscription.41`
 - **`unpaid` read as canceled or as paid**, or a webhook awaited after resume. `background.25`, `unsuspendSubscription.2`, `unsuspendSubscription.3`
+- **Access cut the moment a renewal is `unpaid`**, while UnivaPay is still retrying; end it on `suspended` or `canceled` (`subscriptions.md` step 7). `background.66`, `background.63`
+- **A subscription's 3-D Secure return page that reads `univapayChargeId`.** It carries `univapaySubscriptionId`. `createSubscription.38`
 - **A JSON body parsed from cancel's 204, or a crash on its empty 403.** `cancelSubscription.1`, `cancelSubscription.3`
 - **`completed` treated as a failure.** `background.73`
 - **The amount PATCHed on a fixed-count plan.** It is refused. `updateSubscription.7`
@@ -93,7 +99,7 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 ## Saved cards and 3-D Secure (`saved-cards.md`, `three-ds-server-charges.md`)
 
 - **No hand-off when the bank asks**, the issuer page in an iframe, or the wrong issuer-token endpoint. `getChargeThreeDsIssuerToken.2`, `getChargeThreeDsIssuerToken.3`, `getChargeIssuerToken.7`
-- **SDK field names (`requestData`) posted to the issuer** instead of the wire names (`payloadToWireFields`). (verified live in test mode)
+- **SDK field names (`requestData`) posted to the issuer** instead of the wire names (`payloadToWireFields`). `getChargeThreeDsIssuerToken.2`
 - **A charge waiting for 3-D Secure cancelled.** `createCancel.5`
 - **`three_ds.mode: "provided"` sent, or `three_ds.mode` left out on server charges** and `normal` assumed. `createCharge.41`, `createCharge.42`
 - **A bounded recurring token (`usage_limit`) charged twice in its period.** `createCharge.60`
@@ -104,11 +110,12 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 ## Konbini, bank transfer and PayPay (`konbini-bank-paypay-api.md`, `checkout-widget.md`)
 
 - **No payment number, slip or bank account shown to the customer**, or read from the create reply. Read them once the charge is `awaiting`. `createCharge.83`, `getTransactionToken.3`, `getCharge.2`
-- **`metadata.internal_convenience_payment_number` read at the top level** of the SDK's `metadata`. It is under `metadata.additionalProperties` (verified live in test mode).
+- **`metadata.internal_convenience_payment_number` read at the top level** of the SDK's `metadata`. It is under `metadata.additionalProperties`. (SDK, tested)
 - **Pay-easy without the institution number 58091.** `createCharge.84`
 - **A token reused after a failed or expired attempt.** Make a new token and charge. `background.51`, `background.54`, `background.49`
 - **Bank-transfer amounts not compared with the order.** `background.52`, `background.53`
-- **A redirect to the test-mode dummy issuer token.** `getChargeIssuerToken.3`
+- **A redirect to the test-mode dummy issuer token, or a hand-off that fails on it** (it is `test-issuer-token`, not a URL). `getChargeIssuerToken.3`
+- **A konbini deadline left to the console for an event booking**, or a time of day trusted for 7-Eleven, Seicomart or Pay-easy. `createTransactionToken.28`, `createCharge.24`
 - **`expiration_time_shift` sent as a duration (`PT23H59M`).** `createTransactionToken.26`, `createTransactionToken.27`
 
 ## Errors and responses (`templates/univapay-errors.ts`)

@@ -4,9 +4,9 @@ Use this when staff (or your rules) give money back on a **paid** order: card, P
 
 ## Before you start
 
-- **Keys:** the store app token and its secret, on the server only. Refund calls are made with `{secret}.{jwt}`.
+- **Keys:** server only, refund calls with `{secret}.{jwt}`.
 - **Ask UnivaPay** that refunds are enabled for your merchant and store (`createRefund.9` (REFUND_NOT_ALLOWED)), whether a `refund_percent_limit` is set (`createRefund.1`), and which methods allow partial refunds in live mode (`createRefund.14`).
-- **Webhook:** one webhook with `refund_finished` and `cancel_finished` (plus your charge events). See `shared/webhooks.md`.
+- **Webhook:** triggers `refund_finished` and `cancel_finished` (plus your charge events), set up as in `shared/webhooks.md`.
 - **Templates to copy:** `payment-status.ts` (`settleRefund`, `refundOutcome`, `settleCancel`), `idempotency.ts`, `univapay-errors.ts`, `webhook-receiver.ts`.
 - **Your data:** on each order, the payment **method** (saved at checkout), `charge_id`, `charged_amount`; a refunds table (`refund_id`, `amount`, `status`, `request_id`, `error_code`); a manual-refunds table for konbini and bank transfer (`amount`, `state` to-do/done, `request_id`).
 
@@ -14,14 +14,14 @@ Use this when staff (or your rules) give money back on a **paid** order: card, P
 
 1. **Re-read the charge first.** `client.charges.getCharge({ storeId, id: chargeId })`. Decide from its `status`, then from the order's method. Never from the order's own old state.
 
-2. **Not paid yet → cancel, don't refund.** Only a `successful` charge can be refunded. A refund of an `authorized` card hold, or of an `awaiting` konbini or bank-transfer charge, is refused 400 `CANNOT_REFUND_UNSUCCESSFUL_CHARGE` (`createRefund.6`) (verified live in test mode for all three).
+2. **Not paid yet → cancel, don't refund.** Only a `successful` charge can be refunded: an `authorized` hold or an `awaiting` konbini or bank-transfer charge is refused (`createRefund.6`).
    - Card hold: cancel it (`authorize-capture.md` step 7; `createCancel.3`).
    - Unpaid konbini: cancel the payment request; the customer's payment number stops working (`createCancel.4`).
-   - Unpaid bank transfer: an `awaiting` charge was cancelled (verified live in test mode). Don't cancel one that has received money (`createCancel.11`).
+   - Unpaid bank transfer: cancel the `awaiting` charge (`createCancel.16`). Don't cancel one that has received money (`createCancel.11`).
    - Tell staff the real reason: "The customer hasn't paid yet, so there is nothing to refund. Cancel the payment request instead." Never "konbini can't be refunded" for an unpaid order (a common mistake).
    - `failed` or `canceled` → nothing was taken; nothing to refund.
 
-3. **Paid by konbini or bank transfer → refund outside UnivaPay.** UnivaPay refuses both: a paid bank-transfer charge with 400 `REFUND_NOT_ALLOWED` (`createRefund.2`), a paid konbini charge with 400 `REFUND_NOT_ALLOWED` (`createRefund.8`) (both verified live). A paid konbini charge can't be cancelled either (`createCancel.6`) (verified live in test mode). So don't call `createRefund` for them:
+3. **Paid by konbini or bank transfer → refund outside UnivaPay.** UnivaPay refuses both refunds (`createRefund.2` bank transfer, `createRefund.8` konbini), and a paid konbini charge can't be cancelled either (`createCancel.6`). So don't call `createRefund` for them:
    - record a manual refund (`to-do`, amount);
    - **tell staff:** "UnivaPay can't refund konbini (bank-transfer) payments, so nothing was sent to UnivaPay. Return ¥X to the customer yourself, for example by bank transfer to their account, then press 'Mark refund done'.";
    - **tell the customer:** "We'll return ¥X to you directly. We'll contact you to get your bank account details." Not "refunded";
@@ -32,21 +32,21 @@ Use this when staff (or your rules) give money back on a **paid** order: card, P
    - Card refunds are possible for about 180 days (other methods: `createRefund.20`). After that the refund ends in error; refund outside UnivaPay.
 
 5. **Create the refund with one key per refund request.** Make a `requestId` when the staff member opens the refund form (or per automated refund). Then `client.refunds.createRefund({ storeId, chargeId, idempotencyKey: idempotencyKey("refund", order.id, requestId, amount), body: { amount, currency, reason: "customer_request", metadata: { orderId } } })`.
-   - createRefund honours the key: a repeat returns the same refund with `Idempotency-Status: retrieved_idempotent_response` (`every-request.21`) (verified live in test mode). A second, genuine partial refund needs a new `requestId`. Never reuse the key with another amount (`updateCharge.1` (same key, different body: first result)).
-   - The replayed reply carries the refund's status **as first stored** (`pending`), even after the refund succeeded (verified live in test mode). Never read the status from a create reply; GET it.
+   - createRefund honours the key: a repeat returns the same refund (`every-request.21`, `createRefund.23`). A second, genuine partial refund needs a new `requestId`. Never reuse the key with another amount (`updateCharge.1` (same key, different body: first result)).
+   - A replayed reply carries the status as first stored (`createRefund.23`). Never read the status from a create reply; GET it.
    - Reasons: `customer_request`, `duplicate` or `fraud` only (`updateRefund.1`).
    - Also guard in your app: one refund per order at a time, and "already requested" for a `requestId` you have seen.
 
-6. **A pending refund is not refunded.** The create reply is `pending` (`createRefund.3`) (verified live in test mode). Store the refund as **processing**: it blocks that amount from new refunds, but the order is not "refunded" and the customer sees "Your refund of ¥X is being processed". Then `settleRefund(client, storeId, chargeId, refund.id)`:
+6. **A pending refund is not refunded.** The create reply is `pending` (`createRefund.3`, `createRefund.13`). Store the refund as **processing**: it blocks that amount from new refunds, but the order is not "refunded" and the customer sees "Your refund of ¥X is being processed". Then `settleRefund(client, storeId, chargeId, refund.id)`:
    - `refunded` (`successful`) → add to the refunded total;
    - `processing` → leave it to `refund_finished`; card refunds through an overseas acquirer can stay pending for 1–2 weeks (`createRefund.21`);
    - `failed` → free the amount again, show the error code (`createRefund.18`; codes 500–504: `createCharge.92`–`createCharge.95`);
    - `needs-attention` (`error`) → may still change; check later.
    - Read a refund by id with `getRefund`, not from `listRefunds`: the list lags (`listRefunds.1`). Polling with `polling: true` is what `settleRefund` does (`getRefund.1`).
 
-7. **"Fully refunded" comes from your refunds, not the charge.** A fully refunded charge keeps `status: successful` (`getCharge.8`) (verified live in test mode). Show `fully-refunded` when successful + manual-done refunds reach `charged_amount`.
+7. **"Fully refunded" comes from your refunds, not the charge.** A fully refunded charge keeps `status: successful` (`getCharge.8`). Show `fully-refunded` when successful + manual-done refunds reach `charged_amount`.
 
-8. **Webhook `refund_finished`** (`createRefund.17`, `background.32`; receiver rules `background.9`, `background.11`, `background.18`, `background.19`): find the order from `data.charge_id`, ignore charges you don't know, then `settleRefund(…, { maxPolls: 1 })` on `data.id` and update that refund from the GET. Don't trust the body alone. `cancel_finished` does the same for step 2's cancels (`background.35`).
+8. **Webhook `refund_finished`** (`createRefund.17`, `background.32`; receiver: `shared/webhooks.md`): find the order from `data.charge_id`, ignore charges you don't know, then `settleRefund(…, { maxPolls: 1 })` on `data.id` and update that refund from the GET. Don't trust the body alone (`background.19`). `cancel_finished` does the same for step 2's cancels (`background.35`).
 
 9. **What else to tell staff** (read every refusal with `readUnivapayError`, then `hasReason`):
    - `REFUND_EXCEEDS_CHARGE_AMOUNT` or `VALIDATION_ERROR`/`REFUND_NOT_WITHIN_BOUNDS` → more than is left; reload (`createRefund.11`, `createRefund.10`);
@@ -63,7 +63,7 @@ Use this when staff (or your rules) give money back on a **paid** order: card, P
 - **Waiting for the charge to become "refunded"**: it stays `successful` (`getCharge.8`).
 - **Over-refund**: more than the charge (`createRefund.10`) or than what is left, counting pending refunds (`createRefund.11`).
 - **One key for every refund of a charge**: the second partial refund silently returns the first (`every-request.21`). One `requestId` per refund.
-- **Reading the status from a replayed create reply**: it is the old stored status (verified live in test mode). GET the refund.
+- **Reading the status from a replayed create reply**: it is the old stored status (`createRefund.23`). GET the refund.
 - **Refund in the requested currency of a converted charge** instead of `charged_currency` (`createRefund.12`).
 - **Partial refunds assumed in live mode** for card or PayPay (`createRefund.14`), or for MCP (`createRefund.4`).
 - **A refund read from `listRefunds` right after creating it** (`listRefunds.1`).
@@ -79,7 +79,7 @@ Unit tests (fake UnivaPay):
 - amount above what's left, zero, or on a fully refunded order → refused locally;
 - the same refund form twice → one `createRefund`.
 
-Test-mode run (all verified live in test mode):
+Test-mode run:
 - card partial refund 410 of 2,410: create reply `pending` → `successful`; order partly refunded, 2,000 left;
 - same form twice at once → one refund; createRefund with the same key → same refund id, `retrieved_idempotent_response`, stale `pending` body;
 - over the charge → `REFUND_NOT_WITHIN_BOUNDS`; over what's left → `REFUND_EXCEEDS_CHARGE_AMOUNT`; other currency → `CURRENCY_MUST_MATCH_CHARGE`;

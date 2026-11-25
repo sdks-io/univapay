@@ -30,7 +30,7 @@ export type PaymentLinkInput = {
   failureRedirectUrl?: string;
   /** Pre-fill the customer's email (shown filled in on the form). */
   emailAddress?: string;
-  /** Your order reference. Sent as `order_id`: verified live, it arrives on the charge as metadata `order_id`
+  /** Your order reference. Sent as `order_id`: it arrives on the charge as metadata `order_id` (createCharge.99)
    *  (SDK: `charge.metadata.orderId`) and on the success/failure redirect as `order_id`. */
   orderId?: string;
   /** Other metadata, sent as plain `key=value` parameters (the console's URL-code builder adds metadata the same way). */
