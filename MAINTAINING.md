@@ -80,7 +80,10 @@ UnivaPay's SDK 1.2.3 has 19 verified bugs. The plain-English report for UnivaPay
 - Every object a live run creates is recorded in `live/out/created.jsonl`; `npx tsx live/cleanup.ts` refunds, cancels or deletes whatever is still open.
 - `test/sdk-1.2.3-bugs.test.ts` and `live/check-sdk-bugs.ts` prove each SDK problem the skill works around. Every note and safe-code comment for one is tagged `(SDK 1.2.3 bug X)`.
 
-### When UnivaPay releases a fixed SDK
-1. Pin the new version in `dev/package.json` and run `npm test`: each test in `test/sdk-1.2.3-bugs.test.ts` that now FAILS is a bug that was fixed.
-2. For each fixed bug, search the skill and the dev workspace for its tag (e.g. `grep -rn "SDK 1.2.3 bug N1"`) and remove the note and its safe code, as listed in `verification/BUG-HANDLING.md`.
-3. Re-run everything: `npm run typecheck`, `npm test`, both checkers, the live runs, then `live/cleanup.ts`.
+### When UnivaPay releases a new SDK version
+The SDK map in the plugin (`sdk-map/`) is ours, not the SDK's, so it does **not** update itself; in v4 the generator shipped the map inside the SDK package. The map, the skills and the plugin's pin all name exactly `1.2.3`, and the getting-started skill tells agents to distrust the map when `npm ls` shows another version. So a new SDK version needs all of these steps:
+1. **Refresh the map.** In `v3/work/map-agent/checks/`, pin the new version in `package.json`, then `npm install` and `node run-all.mjs --live --selftest` (see `v3/map/VERIFY.md`, "How to re-run"). This rebuilds the map from the new source and re-runs every check (compile, wire, models, docs, live). Fix every failing check, and replace `1.2.3` in the map's header and pages.
+2. **Find the fixed bugs.** Pin the new version in `dev/package.json` and run `npm test`: each test in `test/sdk-1.2.3-bugs.test.ts` and `test/sdk-1.2.3-map-bugs.test.ts` that now FAILS is a bug that was fixed. Also run `npx tsx live/check-sdk-bugs.ts`.
+3. **Remove the old workarounds.** For each fixed bug, search the skill and the dev workspace for its tag (e.g. `grep -rn "SDK 1.2.3 bug N1"`) and remove the note and its safe code, as listed in `verification/BUG-HANDLING.md`.
+4. **Move the pin everywhere.** Update `v3/plugin-build/src/plugin-config.json` (`source.branch`, `package.version`), the anchored edits in `v3/overlay/edits/` that name the version, the integrate skill in `v3/overlay/`, and the deep skill.
+5. **Re-run everything:** `npm run typecheck`, `npm test`, both checkers, the live runs, then `live/cleanup.ts`. Then release a new plugin version (above).
