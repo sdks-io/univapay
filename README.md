@@ -8,18 +8,30 @@ One skill set per language. The entry point is that language's getting-started s
 
 | Language | Skill prefix | Skills |
 | --- | --- | --- |
-| TypeScript | `typescript-` | `typescript-authentication`, `typescript-calling-endpoints`, `typescript-client-initialization`, `typescript-configuration-resilience`, `typescript-error-handling`, `typescript-event-streams`, `typescript-getting-started`, `typescript-integrate-univapay-public-api`, `typescript-models`, `typescript-testing` |
+| TypeScript | `typescript-` | `typescript-authentication`, `typescript-calling-endpoints`, `typescript-client-initialization`, `typescript-configuration-resilience`, `typescript-error-handling`, `typescript-getting-started`, `typescript-integrate-univapay-public-api`, `typescript-models`, `typescript-testing`, `typescript-univapay-payments` |
+
+The SDK is UnivaPay's own TypeScript SDK, `univapay-client-sdk`, pinned to version `1.2.3`.
+
+- `typescript-integrate-univapay-public-api` is the first skill to load for any integration. It sets the plan-first workflow and the contract sheet.
+- `typescript-univapay-payments` holds the UnivaPay payment recipes, with tested templates. It covers checkout, payment links, holds and capture, refunds, subscriptions, saved cards, 3-D Secure, konbini, bank transfer and PayPay, plus webhooks and recovery.
+
+## Also inside
+
+| Folder | What it holds |
+| --- | --- |
+| `business-rules/` | The business rules that UnivaPay's own API definition and docs state but the schema can't express, filed by operation. Start at `rules.md`. |
+| `sdk-map/` | A map of `univapay-client-sdk@1.2.3`: every operation's call, argument order, wire names, headers and error classes, and every model's fields with their wire names. Every line was checked against that SDK version. Start at `sdk-map.md`. |
 
 ## Agents
 
 | Agent | What it does |
 | --- | --- |
-| `univapay-public-api-planner` | Writes `univapay-public-api-plan.md`, the plan and its contract sheet, before any project code is written, and revises it in place. `typescript-integrate-univapay-public-api` starts it once the SDK is installed or its source reached, on the main agent's own model. |
+| `univapay-public-api-planner` | Writes `univapay-public-api-plan.md` (the plan and its contract sheet) before any project code is written, and revises it in place. `typescript-integrate-univapay-public-api` starts it once the SDK is installed, on the main agent's own model. |
 
 How each host gets it:
 
 - **Claude Code** loads it from `scoped/agents/` with the plugin and lists it as `univapay:univapay-public-api-planner`. Its file sets `model: inherit`, so it runs on the main agent's model.
-- **Where no subagent tool lists it** (a host that doesn't load a plugin's agents, or subagents turned off), the main agent says so in one line and writes the plan itself before any code.
+- **Where no subagent tool lists it** (a host that doesn't load a plugin's agents, or has subagents turned off), the main agent says so in one line and writes the plan itself before any code.
 
 ## Install
 

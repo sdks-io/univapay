@@ -12,7 +12,7 @@
 // - `three_ds.mode: skip` needs the secret and an account option enabled by UnivaPay (createCharge.43); don't assume it.
 // - Two charges for the same amount on the same card within 30 s can be refused as CHARGE_TOO_QUICK (createCharge.37);
 //   use one Idempotency-Key per order (idempotency.ts) so a double tap is the same request, not a second charge.
-import type { UnivapayPublicApiClient } from "univapay-public-api";
+import type { ChargeCreateRequestThreeDsMode, Client, TokenResponseCardData } from "univapay-client-sdk";
 import { settleCharge, type ChargeOutcome } from "./payment-status.js";
 
 export type SavedCardCharge = {
@@ -22,10 +22,15 @@ export type SavedCardCharge = {
   /** From YOUR order on the server, in the smallest unit. */
   amount: number;
   currency?: string;
-  /** From idempotency.ts: idempotencyKey("charge", order.id, order.amount). */
+  /** From idempotency.ts: idempotencyKey("charge", order.id, order.amount, order.attempt). Required: without it the SDK
+   *  sends a new random key on every call, so a retry is a second charge (SDK 1.2.3 bug M5). */
   idempotencyKey: string;
+  /** Send it every time: left out, the store's default applies (createCharge.42). `skip` only if UnivaPay enabled it (createCharge.43). */
+  threeDsMode?: `${ChargeCreateRequestThreeDsMode}`;
   /** Where the customer comes back after 3-D Secure (your page). */
   threeDsReturnUrl?: string;
+  /** `orderId` must be text: a number can't be sent, and one charge with a number in order_id breaks reading it and
+   *  the whole charge-list page it is on (SDK 1.2.3 bug H1). */
   metadata?: { orderId?: string };
 };
 
@@ -37,24 +42,26 @@ export type SavedCardResult =
   | { outcome: "waiting-for-customer"; chargeId: string };
 
 /** Create the charge, wait for it to settle, and if it waits for 3-D Secure return the hand-off for the browser. */
-export async function chargeSavedCard(client: UnivapayPublicApiClient, req: SavedCardCharge): Promise<SavedCardResult> {
-  const created = await client.charges.createCharge({
-    idempotencyKey: req.idempotencyKey,
-    body: {
-      transactionTokenId: req.tokenId, amount: req.amount, currency: req.currency ?? "JPY",
-      ...(req.threeDsReturnUrl ? { threeDs: { redirectEndpoint: req.threeDsReturnUrl } } : {}),
-      ...(req.metadata ? { metadata: req.metadata } : {}),
-    },
+export async function chargeSavedCard(client: Client, req: SavedCardCharge): Promise<SavedCardResult> {
+  const threeDs = {
+    ...(req.threeDsReturnUrl ? { redirectEndpoint: req.threeDsReturnUrl } : {}),
+    ...(req.threeDsMode ? { mode: req.threeDsMode as ChargeCreateRequestThreeDsMode } : {}),
+  };
+  const { result: created } = await client.charges.createCharge(req.idempotencyKey, {
+    transactionTokenId: req.tokenId, amount: req.amount, currency: req.currency ?? "JPY",
+    ...(Object.keys(threeDs).length ? { threeDs } : {}),
+    ...(req.metadata ? { metadata: req.metadata } : {}),
   });
   const { charge, outcome } = await settleCharge(client, req.storeId, created.id!);
   if (outcome !== "waiting-for-customer") return { outcome: outcome as Exclude<ChargeOutcome, "waiting-for-customer">, chargeId: charge.id! };
   // `awaiting` on a card charge = 3-D Secure. Fetch the hand-off.
-  const it = await client.charges.getChargeThreeDsIssuerToken({ storeId: req.storeId, id: charge.id! });
+  const { result: it } = await client.charges.getChargeThreeDsIssuerToken(req.storeId, charge.id!);
   return { outcome: "needs-3ds", chargeId: charge.id!, handOff: { method: "POST", url: it.issuerToken, contentType: it.contentType, fields: payloadToWireFields(it.payload) } };
 }
 
 /** Rebuild the form fields with the names the issuer expects. The SDK renames `request_data` to `requestData`, keeps
- *  `sSpcd`, `sCptok` and `sTerkn` as they are, and puts every other field in `additionalProperties` (wire names). */
+ *  `sSpcd`, `sCptok` and `sTerkn` as they are, and puts every other field in `additionalProperties` (wire names)
+ *  (SDK 1.2.3 bug S5) (SDK, tested: test/charge-saved-card.test.ts). */
 export function payloadToWireFields(payload: { requestData?: string; sSpcd?: string; sCptok?: string; sTerkn?: string; additionalProperties?: Record<string, unknown> } | null | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!payload) return out;
@@ -72,6 +79,13 @@ export function threeDsHandOffPage(h: ThreeDsHandOff): string {
 }
 
 /** After the customer returns from 3-D Secure: re-read the charge (never trust the return URL alone). */
-export async function afterThreeDs(client: UnivapayPublicApiClient, storeId: string, chargeId: string) {
+export async function afterThreeDs(client: Client, storeId: string, chargeId: string) {
   return settleCharge(client, storeId, chargeId);
+}
+
+/** The card part of a token read with getTransactionToken (brand, last four, `threeDs.enabled` / `threeDs.status`).
+ *  The SDK types `data` as a union of every payment type's data and `paymentType` as a plain string, so a check on
+ *  `paymentType` doesn't narrow it by itself (SDK, tested: strict tsc). Undefined for a token that isn't a card. */
+export function cardTokenData(token: { paymentType?: string; data?: unknown }): TokenResponseCardData | undefined {
+  return token.paymentType === "card" ? (token.data as TokenResponseCardData | undefined) : undefined;
 }

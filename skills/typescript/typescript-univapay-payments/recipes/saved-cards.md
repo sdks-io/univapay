@@ -6,7 +6,7 @@ Use this when a signed-in customer saves a card once and your server charges it 
 
 - **Keys:** server only, every call with `{secret}.{jwt}`: listing recurring tokens and `skip` refuse the app token alone (`listAllTransactionTokens.2` (recurring list needs the secret), `createCharge.43` (skip needs the secret), `createCharge.98` (skip with the app token alone)).
 - **Account options to ask UnivaPay about:** recurring tokens (`createTransactionToken.13` (RECURRING_TOKEN_DISABLED)), unlimited recurring tokens or a `usage_limit` (`createTransactionToken.14` (usage_limit required)), and `three_ds.mode: skip` if you want it (`createCharge.43`). Don't assume any of them.
-- **Webhook:** one webhook with these triggers: `charge_finished`, `charge_updated`, `recurring_token_deleted`, `token_replaced`, `token_three_ds_updated`, `token_cvv_auth_updated`, set up as in `shared/webhooks.md`.
+- **Webhook:** one webhook with these triggers: `charge_finished`, `charge_updated`, `recurring_token_deleted`, `token_replaced`, `token_three_ds_updated`, `token_cvv_auth_updated`, set up as in `shared/webhooks.md`. SDK 1.2.3 can't create or read a webhook with `token_three_ds_updated` (SDK 1.2.3 bug H3): use `createWebhookRaw` and `getWebhookRaw` from `webhook-receiver.ts`.
 - **Templates to copy:** `charge-saved-card.ts`, `idempotency.ts`, `payment-status.ts`, `univapay-errors.ts`, `webhook-receiver.ts`.
 - **Your data:** a customer table, a saved-card table (`customer_id`, `token_id`, brand, last four, `three_ds_status`, `removed`), and an order table with `amount`, `state`, `attempt`, `charge_id`.
 
@@ -16,23 +16,23 @@ Use this when a signed-in customer saves a card once and your server charges it 
 
 2. **Save the card in UnivaPay's form, never through your server.** Use the widget or inline form with `checkout: "token"` and `tokenType: "recurring"` to save without paying, or `checkout: "payment"` + `tokenType: "recurring"` to save while paying (`createTransactionToken.2`, `createTransactionToken.4` (raw card data needs PCI DSS)).
    - Saving without a payment: turn on `cvvAuthorize: true`. Without it the CVV expires after 5 minutes and later charges fail (`createTransactionToken.31` (CVV authorization), `createCharge.65` (CVV expires)).
-   - To tag the card with your customer, get a store-scoped UUID with `stores.createCustomerId({ storeId, body: { customerId: yourCustomerId } })` and pass it as `univapayCustomerId` (`data-univapay-customer-id`). Repeating the call is safe and gives the same UUID (`createCustomerId.1`, `createCustomerId.2`). The token then carries metadata `univapay-customer-id`, and `transactionTokens.listStoreTransactionTokens({ storeId, customerId })` finds it (`listAllTransactionTokens.5`).
+   - To tag the card with your customer, get a store-scoped UUID with `(await client.stores.createCustomerId(storeId, { customerId: yourCustomerId })).result.customerId` and pass it as `univapayCustomerId` (`data-univapay-customer-id`). Repeating the call is safe and gives the same UUID (`createCustomerId.1`, `createCustomerId.2`). The token then carries metadata `univapay-customer-id`, and `client.transactionTokens.listStoreTransactionTokens(storeId, undefined, customerId)` finds it (`listAllTransactionTokens.5`).
 
 3. **Link the token to YOUR customer on the server.** The browser only sends the token id. On the server:
-   - `transactionTokens.getTransactionToken({ storeId, id })`;
+   - `(await client.transactionTokens.getTransactionToken(storeId, tokenId)).result`;
    - check `paymentType === "card"`, `type === "recurring"` and `active !== false`. The widget can return a `one_time` token even when you asked for recurring (`createTransactionToken.9` (check the created token's type));
-   - if `metadata["univapay-customer-id"]` is set, it must equal the signed-in customer's UUID (`listAllTransactionTokens.5`);
+   - if `metadata["univapay-customer-id"]` is set, it must equal the signed-in customer's UUID (`listAllTransactionTokens.5`). Never put an object into a token's metadata: UnivaPay refuses it (`updateCharge.6`);
    - refuse a token already linked to another customer;
-   - store `data.threeDs.enabled` and `data.threeDs.status` (`getTransactionToken.2` (read the token's 3-D Secure result)). If the status is `pending` or `awaiting`, re-read with `polling: true` a few times (`getTransactionToken.1`).
+   - store `cardTokenData(token)?.threeDs?.enabled` and `?.status` (`getTransactionToken.2` (read the token's 3-D Secure result)); `cardTokenData` (`charge-saved-card.ts`) is needed because the SDK's token type doesn't narrow on `paymentType` (SDK, tested). If the status is `pending` or `awaiting`, re-read with polling (`getTransactionToken(storeId, tokenId, true)`) a few times (`getTransactionToken.1`).
 
 4. **Choose the 3-D Secure mode for each later charge from the token's CURRENT state.** Re-read the token just before charging (step 3's GET):
    - `status: "successful"` → send no mode (or `normal`); the charge succeeds without the customer (`createCharge.39`). Don't add `skip` for these.
-   - anything else (`failed`, `error`, `null`, never done) → a charge in the default mode waits for 3-D Secure (`awaiting`) (`createCharge.42`, `createCharge.45`, `createCharge.66`, `createTransactionToken.36`). Either send `threeDs: { mode: "skip" }` when UnivaPay has enabled skip for you (`createCharge.43`), or run 3-D Secure with the customer present: `three-ds-server-charges.md`.
+   - anything else (`failed`, `error`, `null`, never done) → a charge in the default mode waits for 3-D Secure (`awaiting`) (`createCharge.42`, `createCharge.45`, `createCharge.66`, `createTransactionToken.36`). Either send mode `skip` when UnivaPay has enabled skip for you (`createCharge.43`), or run 3-D Secure with the customer present: `three-ds-server-charges.md`.
 
 5. **Charge the order from the server.** The amount comes from YOUR order, the token from the signed-in customer's own saved card, never from the request body.
-   - Create the order once, before the pay button is shown, and protect the pay action per order: a "pay with saved card" that makes a new order on each click lets a double tap charge twice.
+   - Create the order once, before the pay button is shown, and protect the pay action per order: a "pay with saved card" that makes a new order on each click lets a double tap charge twice. Claim the order before the first UnivaPay call: set it to `processing` with no `await` between the state check and the change, and answer a second request from that state (app rule).
    - Key: `idempotencyKey("charge", order.id, order.amount, order.attempt)` (`idempotency.ts`). One key per order attempt; send it on every try (`every-request.20`, `every-request.21`).
-   - Card: when step 4 says no `skip`, call `chargeSavedCard(client, { storeId, tokenId, amount, idempotencyKey, threeDsReturnUrl, metadata: { orderId } })`. It waits for the result and returns `needs-3ds` with a hand-off when the bank asks. `chargeSavedCard` has no mode option, so for `skip` call `client.charges.createCharge({ idempotencyKey, body: { transactionTokenId, amount, currency: "JPY", threeDs: { mode: "skip" }, metadata: { orderId } } })` and then `settleCharge(client, storeId, id)`.
+   - Card: call `chargeSavedCard(client, { storeId, tokenId, amount, idempotencyKey, threeDsMode, threeDsReturnUrl, metadata: { orderId } })` with `threeDsMode` from step 4 (`"normal"`, or `"skip"` when step 4 says so). It waits for the result and returns `needs-3ds` with a hand-off when the bank asks.
    - Wrap the call in `withIdempotentRetry(key, …)`: it retries only "no answer" and temporary errors, with the same key.
    - Map the outcome (`payment-status.ts`): `paid` → order paid. `held` → NOT paid (`createCharge.21`, `captureCharge.1`). `needs-3ds` → send the customer to the hand-off page (`three-ds-server-charges.md`). `processing` → leave it to the webhook (`createCharge.26`, `createCharge.27`). `failed` → read `chargeErrorCode(charge)`; increase `order.attempt` so a new try gets a new key.
 
@@ -42,19 +42,19 @@ Use this when a signed-in customer saves a card once and your server charges it 
    - Support can shorten the interval to 1 second if you send an Idempotency-Key on every charge (`createCharge.38`).
 
 7. **Webhooks** (receiver: `shared/webhooks.md`):
-   - `charge_finished` (`background.21`) and `charge_updated` (`background.20`): find the order from `data.metadata.order_id`; the SDK's `metadata.orderId` is sent as `order_id` (SDK, tested). Ignore unknown orders, and re-read the charge with `settleCharge` before changing the order (`background.19`).
+   - `charge_finished` (`background.21`) and `charge_updated` (`background.20`): find the order from `data.metadata.order_id` in the raw body (the SDK's `metadata.orderId` is sent as `order_id` (SDK, tested)). Ignore unknown orders, and re-read the charge with `settleCharge` before changing the order (`background.19`).
    - `recurring_token_deleted` (`background.33`): mark that saved card removed; never charge it again.
    - `token_replaced` (`background.34`): `data` is the NEW token. Find the saved card by `data.previous_id` and swap in the new token (`data.id`). Re-read the new token's 3-D Secure state.
    - `token_three_ds_updated` (`background.37`): re-read the token and update the stored 3-D Secure state.
 
-8. **Remove a saved card.** Check that it is the signed-in customer's card. Check for subscriptions on the token first: deleting it stops their charges (`deleteTransactionToken.1`). Then `transactionTokens.deleteTransactionToken({ storeId, id })` and mark the card removed. The token then reads `active: false` (`deleteTransactionToken.2`), and `recurring_token_deleted` arrives (`background.33`).
+8. **Remove a saved card.** Check that it is the signed-in customer's card. Check for subscriptions on the token first: deleting it stops their charges (`deleteTransactionToken.1`). Then `client.transactionTokens.deleteTransactionToken(storeId, tokenId)` (a DELETE: the SDK sends no Idempotency-Key for it (SDK, tested)) and mark the card removed. The token then reads `active: false` (`deleteTransactionToken.2`), and `recurring_token_deleted` arrives (`background.33`).
 
 ## Traps
 
 - **An `authorized` charge marked the order paid** (a common mistake). `authorized` is a hold; only `successful` is paid (`createCharge.21`, `captureCharge.1`). Use `chargeOutcome()`.
 - **Treating the 201 as paid.** A charge starts `pending` (`createCharge.26`, `createCharge.27`). Wait with `settleCharge` or the webhook.
 - **No handling of `CHARGE_TOO_QUICK` / error 311** (a common mistake). It shows up as a 400 or as a failed charge (`createCharge.37`). Test mode never returns it (`createCharge.36`), so only unit tests catch a missing branch.
-- **No Idempotency-Key, or a new one per try.** For `createCharge` the SDK sends no `Idempotency-Key` at all when you don't pass one (SDK, tested), so a retry or a double tap is a second charge. A key re-sent with a different body returns the first result silently (`updateCharge.1`). After 24 hours the key no longer protects (`every-request.22`). Never reuse a key for another action (`every-request.23`).
+- **No Idempotency-Key of your own, or a new one per try.** When you don't pass one, the SDK sends a new random `Idempotency-Key` on every call (SDK 1.2.3 bug M5), so a retry or a double tap is a second charge. A key re-sent with a different body returns the first result silently (`updateCharge.1`). After 24 hours the key no longer protects (`every-request.22`). Never reuse a key for another action (`every-request.23`).
 - **The token's 3-D Secure state was never read** (a common mistake). A charge on a token whose 3-D Secure failed or never ran waits for the customer instead of paying (`createCharge.45`, `createCharge.66`). Read `data.threeDs.status` before every charge (`getTransactionToken.2`).
 - **No 3-D Secure step when the bank asks** (a common mistake). `needs-3ds` must send the customer to the hand-off page and finish by re-reading the charge: `three-ds-server-charges.md`. A charge waiting for 3-D Secure can't be cancelled (`createCancel.5`).
 - **`skip` used without asking UnivaPay**, or from the browser (`createCharge.43`).
@@ -74,7 +74,7 @@ Unit tests (fake UnivaPay behind the real SDK):
 - a token with 3-D Secure `successful` is charged without `skip`;
 - a `one_time` token is refused as a saved card; another customer's card is refused;
 - `token_replaced` swaps the token, `recurring_token_deleted` removes it, an unknown order's event is ignored;
-- `createCharge` without `idempotencyKey` sends no key (so your code must always pass one).
+- `createCharge` without your own key sends a new random key on each call (SDK 1.2.3 bug M5), so your code must always pass one.
 
 Test-mode run:
 - the saved card's type and `data.three_ds` are read;

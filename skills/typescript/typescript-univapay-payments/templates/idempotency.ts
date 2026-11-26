@@ -6,24 +6,30 @@
 //   error is raised (updateCharge.1), so the key must change when the action really changes (e.g. a new amount).
 // - After 24 h the key expires and the request runs again (every-request.22): re-check the resource before resending late.
 // - The same key on a different resource or operation is refused with IDEMPOTENCY_KEY_CONFLICT (every-request.23).
-// - When you pass no `idempotencyKey`, the SDK sends NO key for calls that take one (createCharge, createRefund, …),
-//   so an app-level retry runs the write again and can charge twice. Always pass `idempotencyKey`.
-//   (Calls without that field, e.g. deleteTransactionToken, get a new random key each time.) (SDK, tested)
+// - (SDK 1.2.3 bug M5) When you pass no `idempotencyKey`, the SDK adds a NEW random key to every POST/PUT/PATCH,
+//   so each app-level retry or double click is a new request to UnivaPay and can charge twice. Always pass your own
+//   key, from `idempotencyKey()` below, on every write that takes one (SDK, tested).
+//   createCustomerId takes no key parameter and always gets a random one; DELETE calls (cancelSubscription,
+//   deleteTransactionToken, deleteWebhook) send no key at all (SDK, tested).
 // - Capture and cancel IGNORE the key (captureCharge.16, createCancel.14): a repeat with the same
 //   key is refused (ALREADY_CAPTURED, CANCEL_NOT_ALLOWED), not replayed. Stop double clicks in your app, and on those
-//   errors re-read the charge: it was probably done by the first click.
+//   errors re-read the charge: the first click may have done it.
 // - A replayed refund returns the FIRST reply (still `pending` even after it succeeded): read the status with a GET
 //   (createRefund.23).
 import { createHash } from "node:crypto";
 import { readUnivapayError, type UnivapayFailure } from "./univapay-errors.js";
 
-export type IdempotentAction = "charge" | "capture" | "cancel" | "refund" | "subscription" | "token" | "update";
+export type IdempotentAction = "charge" | "capture" | "cancel" | "refund" | "subscription" | "token" | "update" | "webhook" | "simulate";
 
 /**
  * A deterministic key for one business action, e.g. idempotencyKey("charge", order.id, order.amount).
  * Same inputs → same key, so a double click, a retry or a crash-and-resume reuses it.
  * Put everything that makes the action different into `parts` (the amount, a partial-refund number, an attempt
  * number you increase on purpose for a genuinely new attempt).
+ * Decide that attempt number from an attempt you store and claim BEFORE the first call, with no `await` between
+ * reading the last attempt and claiming the next (app rule). A request that arrives while the attempt is being created,
+ * or while its charge is `pending` or `awaiting`, reuses it and its keys; only an ended attempt (`failed`, `canceled`)
+ * gets a new number. Otherwise a second click in that gap sends new keys and makes a second charge.
  */
 export function idempotencyKey(action: IdempotentAction, ...parts: (string | number)[]): string {
   const h = createHash("sha256").update([action, ...parts.map(String)].join("\u001f")).digest("hex");
@@ -38,7 +44,9 @@ export type RetryResult<T> =
 /**
  * Run a write with ONE key, retrying only when it is safe: no answer arrived, or UnivaPay said "temporary"
  * (429 / 502 / 503 / 504). Stops at once on a refusal, and on "succeeded-unreadable" (the action happened: re-read it).
- * `call` receives the key and must pass it as `idempotencyKey`.
+ * `call` receives the key and must pass it as the SDK's `idempotencyKey` argument, e.g.
+ * `(k) => client.charges.createCharge(k, body)`. Keep the SDK's own retries off (its default) so they don't stack:
+ * (SDK 1.2.3 bug N12) once on, they also retry a GET on 400/401/403/404/409, and a 429 ignores Retry-After (SDK, tested).
  */
 export async function withIdempotentRetry<T>(key: string, call: (idempotencyKey: string) => Promise<T>, opts: { attempts?: number; delayMs?: number } = {}): Promise<RetryResult<T>> {
   const max = opts.attempts ?? 3;

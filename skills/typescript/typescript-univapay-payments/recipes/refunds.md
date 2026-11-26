@@ -12,7 +12,7 @@ Use this when staff (or your rules) give money back on a **paid** order: card, P
 
 ## Steps
 
-1. **Re-read the charge first.** `client.charges.getCharge({ storeId, id: chargeId })`. Decide from its `status`, then from the order's method. Never from the order's own old state.
+1. **Re-read the charge first.** `(await client.charges.getCharge(storeId, chargeId)).result`. Decide from its `status`, then from the order's method. Never from the order's own old state.
 
 2. **Not paid yet → cancel, don't refund.** Only a `successful` charge can be refunded: an `authorized` hold or an `awaiting` konbini or bank-transfer charge is refused (`createRefund.6`).
    - Card hold: cancel it (`authorize-capture.md` step 7; `createCancel.3`).
@@ -31,9 +31,9 @@ Use this when staff (or your rules) give money back on a **paid** order: card, P
    - Partial refunds by method: card and PayPay online partial refunds succeed in test mode (`createRefund.13`). In live mode the sources disagree for card and PayPay online (`createRefund.14`): be ready for a partial refund to be refused or to fail with payment error 318, and offer "refund in full and charge again". MCP (paid in another currency in the widget) is full only (`createRefund.4`), at the rate of the payment (`createRefund.5`). Konbini and bank transfer: step 3.
    - Card refunds are possible for about 180 days (other methods: `createRefund.20`). After that the refund ends in error; refund outside UnivaPay.
 
-5. **Create the refund with one key per refund request.** Make a `requestId` when the staff member opens the refund form (or per automated refund). Then `client.refunds.createRefund({ storeId, chargeId, idempotencyKey: idempotencyKey("refund", order.id, requestId, amount), body: { amount, currency, reason: "customer_request", metadata: { orderId } } })`.
-   - createRefund honours the key: a repeat returns the same refund (`every-request.21`, `createRefund.23`). A second, genuine partial refund needs a new `requestId`. Never reuse the key with another amount (`updateCharge.1` (same key, different body: first result)).
-   - A replayed reply carries the status as first stored (`createRefund.23`). Never read the status from a create reply; GET it.
+5. **Create the refund with one key per refund request.** Make a `requestId` when the staff member opens the refund form (or per automated refund). Then `client.refunds.createRefund(storeId, chargeId, { amount, currency, reason: RefundReasonRequest.CustomerRequest, metadata: { orderId } }, idempotencyKey("refund", order.id, requestId, amount))` (the key is the 4th argument here).
+   - createRefund honours the key: a repeat returns the same refund (`every-request.21`, `createRefund.23`). Without your own key the SDK sends a new random one, so a repeat is a second refund (SDK 1.2.3 bug M5). A second, genuine partial refund needs a new `requestId`. Never reuse the key with another amount (`updateCharge.1` (same key, different body: first result)).
+   - A replayed reply carries the status as first stored (`createRefund.23`); you can see it is a replay in `response.headers["idempotency-status"]` (SDK, tested). Never read the status from a create reply; GET it.
    - Reasons: `customer_request`, `duplicate` or `fraud` only (`updateRefund.1`).
    - Also guard in your app: one refund per order at a time, and "already requested" for a `requestId` you have seen.
 
@@ -42,7 +42,7 @@ Use this when staff (or your rules) give money back on a **paid** order: card, P
    - `processing` → leave it to `refund_finished`; card refunds through an overseas acquirer can stay pending for 1–2 weeks (`createRefund.21`);
    - `failed` → free the amount again, show the error code (`createRefund.18`; codes 500–504: `createCharge.92`–`createCharge.95`);
    - `needs-attention` (`error`) → may still change; check later.
-   - Read a refund by id with `getRefund`, not from `listRefunds`: the list lags (`listRefunds.1`). Polling with `polling: true` is what `settleRefund` does (`getRefund.1`).
+   - Read a refund by id with `getRefund`, not from `listRefunds`: the list lags (`listRefunds.1`). Polling (`getRefund(storeId, chargeId, refundId, true)`) is what `settleRefund` does (`getRefund.1`).
 
 7. **"Fully refunded" comes from your refunds, not the charge.** A fully refunded charge keeps `status: successful` (`getCharge.8`). Show `fully-refunded` when successful + manual-done refunds reach `charged_amount`.
 

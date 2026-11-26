@@ -1,197 +1,305 @@
 ---
-name: "typescript-getting-started"
-description: "Load before answering any Univapay Public API TypeScript SDK question or writing SDK code — the lookup layer for `univapay-public-api`: install, imports, environments, auth, and how to read the SDK map that ships in the package (`sdk-map.md`, `map/operations/`). TypeScript/JavaScript only."
+name: 'typescript-getting-started'
+description: 'Entry point for integrating the Univapay Public API TypeScript/Node SDK (APIMatic-generated, built on the @apimatic/* runtime packages). Carries the SDK''s identity — npm package, `Client` class, `Configuration`, environments, the `ApiError` base — the package layout, the SDK map that ships with this plugin (sdk-map/, next to skills/), and where to read the source. Load this first, before any other typescript-* skill.'
 ---
 
-# Getting started with the Univapay Public API TypeScript SDK
+# Getting started with an APIMatic-generated TypeScript SDK
 
-> **The lookup layer** for Univapay Public API TypeScript SDK code: ground every contract fact here — in the SDK map and the source files it names — never in recall, and carry those facts onto a contract sheet before you implement. `typescript-integrate-univapay-public-api` holds the workflow around it.
+This is the **SDK-specific** reference and grounding layer, and the entry into the companion
+`typescript-*` skills. The SDK is built on the shared `@apimatic/*` runtime packages — always `@apimatic/core`, `@apimatic/schema`,
+`@apimatic/axios-client-adapter`, `@apimatic/authentication-adapters` and `tslib`, plus feature-gated
+ones such as `@apimatic/oauth-adapters` and `@apimatic/pagination`. **`package.json` `dependencies` is
+the authoritative list — read it rather than assuming.** For the general patterns that apply to *any* such SDK (client setup, auth, calling endpoints, models, error
+handling, retries, testing), see the companion API-agnostic skills: `typescript-client-initialization`,
+`typescript-authentication`, `typescript-calling-endpoints`, `typescript-models`,
+`typescript-error-handling`, `typescript-configuration-resilience`, `typescript-testing`.
 
-This page is authoritative for the SDK's identity and surface. The API-agnostic companion skills — `typescript-client-initialization`, `typescript-authentication`, `typescript-calling-endpoints`, `typescript-models`, `typescript-error-handling`, `typescript-configuration-resilience` and `typescript-testing` — are the *usage layer* on top: the way to call each piece and the gotchas a signature cannot show. **Load both:** at each **Integration workflow** step, load the companion it names even after reading the file it covers, and confirm names against the installed package.
+> **Before writing any integration code, open the SDK map** (see *The SDK map — look up first* below).
+> It carries every signature, argument order, wire name, model field, enum value and error row of this
+> SDK. Read the SDK source (the *SDK source* section) for what the map does not carry. The
+> source is obtained exactly as that section describes. Do **not** vendor or edit it inside your project;
+> regenerate the SDK instead if something needs to change.
 
 ## SDK identity
 
-Verified against `package.json` and `sdk-map.md` of the package at version `1.3.0`. **Re-verify after a version bump** — this page is a snapshot, not a live read.
-
-| Fact | Value |
+| | |
 | --- | --- |
-| API | Univapay Public API |
-| Package name (what you install, and what you import) | `univapay-public-api` — **not on npm**; built from source (see *Install*) |
-| Source repository | https://github.com/sdks-io/univapay-apimatic-ts-sdk (branch `main` — the ref this map documents) |
-| Version | `1.3.0` (API spec version `1.3.0`) |
-| Client class | `UnivapayPublicApiClient` (`src/client.ts`) |
-| Options type | `ClientOptions` (`src/client-options.ts`) |
-| Client construction | `new UnivapayPublicApiClient(options: ClientOptions = {})` — the argument is optional, as is **every** field on it, so `new UnivapayPublicApiClient()` compiles. Fields: `serverOptions` · `retry` · `logging` · `hooks` · `fetch` · `jwtToken`. `retry` is the `RetryOptions` policy |
-| Auth | **Bearer token** — set `ClientOptions.jwtToken` |
-| Environments | no selector — one environment; 2 server groups |
-| Base-URL config | `serverOptions.<group>.baseUrl` (`src/servers.ts`) |
-| Log environment variable | `UNIVAPAY_PUBLIC_API_LOG` |
-| Node floor | `>=20.3` (`engines.node`) |
-| Runtime dependency | `zod` (`^4.1.0`) — the only one |
-| Module format | dual ESM + CommonJS folder dialects (`dist/esm`, `dist/commonjs`) behind one export |
-| Typing | the package ships its own `.d.ts` — **a type error against this SDK is a real contract violation, not noise** |
-| Surface | 76 operations · 12 resources · 187 models · 74 open enums · 6 unions · 73 per-operation error subclasses |
+| API | `Univapay Public API` |
+| Runtime dependencies | always `@apimatic/core`, `@apimatic/schema`, `@apimatic/axios-client-adapter`, `@apimatic/authentication-adapters` and `tslib`; plus feature-gated ones — `@apimatic/oauth-adapters` (OAuth), `@apimatic/pagination` (paginated endpoints), `@apimatic/sse` (`text/event-stream` endpoints), `@apimatic/xml-adapter` (XML APIs). **`package.json` `dependencies` is authoritative — read it rather than assuming this list is complete.** |
+| npm package id | `univapay-client-sdk` (version `1.2.3`) — the `"name"` in `package.json` |
+| Install | `npm install univapay-client-sdk` |
+| Client | a single exported `Client` class, constructed with `new Client(config?: Partial<Configuration>)` |
+| Configuration | a plain `Configuration` **options object** (interface in `src/configuration.ts`), passed to the constructor; all fields optional via `Partial` |
+| Auth | **this API declares at least one scheme**, so the `Configuration` carries one nested credential **object** per scheme, named `...Credentials` — **read the property name off `src/configuration.ts`; do not derive it from the scheme name in the spec.** The generator often names it after the auth *type* instead (a scheme named `APIKeyHeader` becomes `customHeaderAuthenticationCredentials`), and only sometimes after the scheme (`basicAuth` → `basicAuthCredentials`). Set it as an object literal; a deprecated top-level bare-string field may also exist alongside it. Here it is `bearerAuthCredentials: { secretKey, jwtToken }`. See **typescript-authentication** |
+| Environment | an `enum Environment` in `src/configuration.ts` — here only `Production`. Hosts come from the `baseUrl` / `directDebitBaseUrl` options; test or live mode comes from the app token |
+| Controllers | one class per resource group, named for the group plus this SDK's controller postfix — read the whole name off the `export class` lines in `src/controllers/`; reach it as a client getter (`client.charges`, `client.refunds`, …; built once per client) or construct it, `new {Controller}(client)`. The client also has store-scoped shortcuts such as `client.getCharge(chargeId)` |
+| Return type | every operation returns `Promise<ApiResponse<T>>` |
+| Base error | `ApiError<T>` (from `@apimatic/core`, re-exported by the SDK) — thrown on non-2xx; see **typescript-error-handling** |
+
+Both were recorded with this SDK, so they are the coordinates a consumer installs rather than whatever this build happened to produce. Pin them as they stand.
+
+## Package layout
+
+APIMatic TypeScript SDKs live under `src/`, with everything re-exported from `src/index.ts`:
+
+- `src/client.ts` — the `Client` class (`constructor(config?: Partial<Configuration>)`, `withConfiguration`,
+  static `fromJsonConfig` / `fromEnvironment`, and the `getBaseUri` base-URL resolver). OAuth-using SDKs
+  expose a public manager property here, whose generated name need not match the scheme name in the spec —
+  grep `public .*Manager` for the real name.
+- `src/configuration.ts` — the `Configuration` interface (timeout, environment, credential objects,
+  `httpClientOptions`), the `Environment` enum, and the env/JSON config readers.
+- `src/defaultConfiguration.ts` — `DEFAULT_CONFIGURATION` and `DEFAULT_RETRY_CONFIG` (the actual defaults).
+- `src/controllers/` — one controller class per API resource group, all extending the generated base
+  controller. Its name is `Base` + the SDK's controller postfix (e.g. `BaseApi` in
+  `src/controllers/baseApi.ts` when the postfix is `Api`); the postfix is fixed at generation time, so
+  read the real class names off the `export class` lines in `src/controllers/` rather than assuming
+  either postfix.
+- `src/models/` — request/response **interfaces**, each paired with a `{name}Schema` for runtime
+  (de)serialization; `src/models/containers/` for oneOf/anyOf union types. **This is where field names,
+  optionality, and enum values live.**
+- `src/errors/` — typed error subclasses, one per error response model
+  (`class {Name}Error extends ApiError<{Payload}>`), each re-exported from `src/index.ts`.
+- `src/core.ts` and `src/clientAdapter.ts` — thin re-exports of the runtime (`@apimatic/core`,
+  `@apimatic/axios-client-adapter`); this is where `ApiError`, `ApiResponse`, `RetryConfiguration`,
+  `HttpClientOptions`, `RequestOptions` actually come from.
+- `src/schema.ts` — re-export of `@apimatic/schema` (the `object`/`optional`/`oneOf`/… combinators).
+- `src/extensions.ts` — **hand-written by UnivaPay, not generated**: the `Idempotency-Key` interceptor, the `poll*` helpers added to `ChargesApi`, `RefundsApi`, `CancelsApi` and `SubscriptionsApi`, and the app-token decoding behind the store shortcuts.
+- `src/events/webhooks/` — webhook parsers (`ChargeHandler`, `TokenHandler`, …), exported from the root.
 
 ## Install
 
-Install the package straight from the repository the plugin records for it, as it is not published to npm:
+This SDK is published out of `https://github.com/univapay/univapay-client-js-sdk`, tag `1.2.3` (there is no `1.2.3` branch) — take that tag explicitly rather than the repository default, which is not necessarily where this SDK is released from. Which registry that pipeline pushes to is a property of the pipeline rather than of the SDK. Try the install command below as-is first: if it resolves, the package is on the public registry and there is nothing further to configure. Only if it 404s do you need the feed — take it from the repository's publish workflow, or from whoever owns the pipeline, and configure that registry before retrying.
 
 ```bash
-npm install git+https://github.com/sdks-io/univapay-apimatic-ts-sdk#main
+npm install univapay-client-sdk
 ```
 
-The installed package carries everything its `files` list packs — `src/`, `sdk-map.md` and the pages under `map/operations/` — so **every lookup on this page works as soon as the install finishes**. **Make sure the installed package is built**, as the source on GitHub is not pre-built.
+It lands in `package.json` as an ordinary dependency. Pin the exact version:
+regenerating the SDK publishes a new one, and a caret range would move the surface under you without
+saying so.
 
-Do not vendor its `src/` into your project, point `tsconfig` `paths` at a throwaway clone, or import from `dist/` directly: the `exports` map, the shipped `.d.ts` chain, the dual-dialect resolution and the SDK map in `node_modules` all depend on a real install.
-
-## Imports — one entry, and only one
-
-**Every** public name is re-exported from the package root — the client, `ClientOptions`, 267 model types with the schema value beside each, the error classes, and the runtime types (`ApiPromise`, `Pageable`, `PageableApiResult`, `ApiResult`, `RequestOptions`, `RetryOptions`, `RequestRetryOptions`, `HookOptions`, `BeforeRequestHook`, `AfterResponseHook`, `HookContext`, `Declared`, `Undeclared`, `Schema`, `EnumSchema`, `Encoded`, `JsonValue`).
-
-```ts
-import { UnivapayPublicApiClient, ApiError, UnivapayPublicApiError } from "univapay-public-api";
-import type { ClientOptions, ApiErrorModel } from "univapay-public-api";
+```json
+"dependencies": {
+  "univapay-client-sdk": "1.2.3"
+}
 ```
 
-Things the specifier alone will not tell you:
-
-- **Deep imports do not resolve.** The `exports` map exposes `.` and `./package.json` and nothing else, so `univapay-public-api/models/…` fails (`TS2307`) even though the file exists in the shipped `src/`. Every `Source` path on the SDK map is where to **read** a shape, never what to import.
-- **From CommonJS**, the typed spelling is `import sdk = require("univapay-public-api")`. A plain `require` destructure runs but yields `any`. A process that loads both dialects gets two copies of every error class, so `instanceof` fails across them (`typescript-error-handling`).
-
-Under `verbatimModuleSyntax`, names carrying no runtime value (`ClientOptions`, every model type) must be imported with `import type`. Under `exactOptionalPropertyTypes`, **omit or spread** an absent optional field rather than assigning `undefined` to it.
-
-## Hosts
-
-This SDK has one environment and so **no environment selector** — there is no `ServerEnvironment` type and no field to set (`src/servers.ts`). The base URL of every server group, the only hosts the SDK knows, is in `sdk-map.md` § *Servers & auth*; reaching any other is a `serverOptions` base-URL override — `serverOptions: { default: { baseUrl: "…" } }` — and nothing in the options then records **which** deployment that is, so make the intent explicit where the client is built.
-
-Consequences to state on every contract sheet that touches configuration:
-
-- An override merges with the built-in default **key by key**; a `baseUrl` override replaces the whole template.
-- Each operation belongs to one server group; a map block carries a **Server** bullet only when its group is not `default`.
-
-## Auth pattern (1 scheme)
-
-Authentication is **per operation**: every operation declares the requirement it enforces and the SDK sends exactly that. Each block on a map page carries an **Auth** bullet, `none` included. There is no client-global switch and no per-call override. 76 of the 76 operations declare a requirement and 0 are public.
-
-| `ClientOptions` field | Scheme kind | What the SDK sends | Read from when unset |
-| --- | --- | --- | --- |
-| `jwtToken` | Bearer token | `Authorization: Bearer <token>` | `UNIVAPAY_PUBLIC_API_JWT_TOKEN` |
-
-```ts
-const client = new UnivapayPublicApiClient();
-```
-
-**A field left unset is read from the environment**, from the variables the table names, once, when the client is built; a value passed to the constructor always wins. **Every credential field is optional at construction, and required at the call.** Leave one unset and the client still builds; a call whose operation requires it rejects with `AuthError` naming the field, before anything is sent. So a `401` means the API rejected the credential that went out — check the operation's **Auth** bullet against the fields you set.
-
-Credential functions, scheme composition, 401 re-authentication: `sdk-map.md` § *Servers & auth* and `typescript-authentication`.
-
-## Resources
-
-Resources are **memoized lazy getters** on the client (`client.<attr>`); reach one only through its getter. Its class is exported for its merged namespace — the per-operation request and error types — and for `instanceof`, not for construction.
-
-12 resources: `sdk-map.md` § *Operations — by resource* names every operation, with the page that documents it.
-
-Every operation has the same call shape — `op(request, options?)`, one **flat, channel-blind** request object first and `RequestOptions` (`{ signal, retry, logging, hooks }`) second — and returns `ApiPromise<T, E>`, or `Pageable<TPage, TItem, E>` for a paged operation. No operation is paged — every one of them is a single request.
-
-⚠ **The request type name is not uniformly `<Operation>Request`.** 2 operations take `<Operation>RequestParams` instead: `enableTokenThreeDs`, `createCustomerId`. Take the name from the operation's **Signature** bullet on its map page; never construct it from the method name.
-
-## SDK map — look up first, open the file second
-
-The map sits at the package root, the directory holding `package.json` and the `src/` tree:
-
-- **`sdk-map.md`** — the index: client construction with the full `ClientOptions` table, the *Not on this SDK* table, the one error family with `ApiResult` and `.asApiResult()`, wire serialization for every channel, servers and auth, runtime and packaging, and the link table into the operations pages.
-- **`map/operations/<resource>.md`** — one page per resource, one `###` block per operation, with bullets in the fixed order **Server**, **Signature**, **Wire** (verb and route), **Auth**, **Request body**, **SDK-sent**, **Returns**, **Error**, **Error arms** — then a **Fields** table giving every request field its channel, wire name, type, required flag and default, and a **Type sources** table naming the declaring file and schema value of every type the operation mentions.
-
-Locate the installed package before you rely on a lookup:
+Confirm what actually resolved — npm keeps serving the copy already in `node_modules/` until you ask
+for the new version by name:
 
 ```bash
-node -e "console.log(require.resolve('univapay-public-api/package.json'))"
+npm ls univapay-client-sdk
 ```
 
-Failing that it is at `node_modules/univapay-public-api/`. **If the resolve fails, or the directory it prints carries no `sdk-map.md`, the map is still in the SDK's own repository** — <https://github.com/sdks-io/univapay-apimatic-ts-sdk>, branch `main`. A registry id is a claim on a shared index rather than proof of identity, so it can resolve to an unrelated package or to a release predating the map; the repository is the copy that is this SDK by construction. Read it there, and if neither route yields a map, mark the fact `UNVERIFIED` and say what would settle it rather than answering from memory.
+The SDK's own `@apimatic/*` dependencies use `^` ranges, so a fresh install can pick newer ones (1.2.3 asks for `@apimatic/axios-client-adapter ^0.3.20`; a fresh install got 0.3.21). Commit your lockfile.
 
-Every `Source` path on the map is relative to that package root (`node_modules/univapay-public-api/`). An import specifier ending `.js` inside that source is the NodeNext spelling of the sibling `.ts` file.
+```ts
+import { Client, Environment, ApiError } from 'univapay-client-sdk';
+// controllers and model types are also exported from the package root:
+import { {Controller} } from 'univapay-client-sdk';
+```
 
-**Read `sdk-map.md` before any `map/operations/` page.** It states what holds for every operation, and **silence means the default**: a block departs from it only by saying so — a paged operation's **Signature** returns `Pageable` and its **Returns** bullet names the strategy and what ends the walk — so take the default rather than opening the source to confirm it.
+> **Plain Node ESM cannot load 1.2.3.** `import` from an `.mjs` file (or a `"type": "module"` package) run by `node` fails with `ERR_MODULE_NOT_FOUND` (`dist/esm/.../jsonBigInt`). `require()`, `createRequire(import.meta.url)` and `tsx` load it.
 
-**The map carries shapes; what an operation *means* lives elsewhere.** When *what* to pass depends on meaning — which values a field accepts beyond its type, a rule that couples two fields, what a defaulted header actually selects — the map will not settle it. Read that operation's entry in `api-reference.md` at the package root, keyed by the same signature, *before* writing the sheet row, and record what you found. A value you already "know" for a field the map types as a plain `string` is a lookup, not a recall — the memory ban applies to it.
+Everything public is re-exported from `src/index.ts`, so import names come from the **package root** — you
+don't import from subpaths. `npm install` pulls the `@apimatic/*` runtime packages transitively.
 
-## Contract facts — the map first, then the source file
+> **The root barrel exports some names as values and others as types, and the split is not obvious from
+> the name.** `src/index.ts` emits `export { X }` for a model that is an **enum** or that **has child
+> types** (a union base other models extend), and `export type { X }` for every other model. So a plain
+> model interface exists only at compile time, while an enum or a union base is a real runtime binding.
+>
+> That matters because a single `import { A, B } from 'univapay-client-sdk'` mixing the two **fails under
+> `verbatimModuleSyntax`** (TS1484; `isolatedModules` alone accepts it) — increasingly the default — and the error names the
+> type-only import rather than explaining the rule. Split it:
+>
+> ```ts
+> import { {EnumOrUnionBase} } from 'univapay-client-sdk';        // value: usable at runtime
+> import type { {Model} } from 'univapay-client-sdk';             // type only
+> ```
+>
+> **Read `src/index.ts` to see which kind a name is** — grep it for the name and look at whether its
+> line says `export` or `export type`. Do not infer it from whether the thing "sounds like" a type.
 
-**The map is the locator; the source files are the shapes.** These are map lookups — don't open a source file for them: an operation's signature and route; its request fields with channel, wire name, required flag and default; its return type; its error subclass and the arms with the status each covers; the `ClientOptions` fields and their defaults; the environments, base URLs and auth wiring; and which file declares a type.
+## The SDK map — look up first, open the source second
 
-Open the one file the map's **Type sources** table names — never derive the path from the type name — for what the map does not carry: a model's members and whether each is required, optional or nullable, and an enum's members with their wire values — the `as const` object in the enum's own file (for an enum inside a model, the file the model imports it from). The table below covers that, everything else, and the full body behind a map row. Paths are relative to `node_modules/univapay-public-api/`:
+This plugin ships a map of this SDK, `univapay-client-sdk@1.2.3`, at **`<plugin-root>/sdk-map/`**. The plugin root is the directory that holds `skills/` and `business-rules/`. The map is not in the npm package.
+
+- **`sdk-map.md`**: read it once. It covers:
+  - building a client: every `Configuration` field and its default, and the retry trap;
+  - how to call an operation: positional arguments, what comes back, the headers sent, the `Idempotency-Key`;
+  - the error model, and how every model behaves;
+  - the poll helpers, the client shortcuts and the webhook handlers;
+  - runtime and packaging;
+  - the index of operation pages and model pages.
+- **`map/operations/<resource>.md`**: one block per operation.
+  - **Call**, **Signature**, **Wire** (method and path), **Request body**, **Headers sent**, **Idempotency-Key**, **Returns**, **Client shortcut** and **Types**.
+  - A parameter table: position, SDK name, wire name, where it goes, type, required.
+  - An error table: status, class thrown, `result`, message.
+- **`map/models/<page>.md`**: one table per model.
+  - Objects: SDK field, wire name, type, optional.
+  - Enums: members with their wire values.
+  - Unions: arms with their type guards.
+
+**Read `sdk-map.md` before any other page.** Then open only the operation page you need, and the model tables it links to.
+
+**The map is the lookup surface; the source is the backstop.** If `npm ls univapay-client-sdk` shows a version other than `1.2.3`, the map describes a different SDK: say so, and confirm each fact in the source.
+
+**What the map does not carry, and where to find it.** Paths start at the package root, `node_modules/univapay-client-sdk/`:
 
 | Question | File |
 | --- | --- |
-| A model's members, required (`f: T`) vs optional (`f?: T`) vs required-nullable (`f: T \| null`) | `src/models/<file the Type sources table names>.ts` |
-| The operation method body and the request it builds | `src/resources/<resource>.ts` |
-| The per-operation request and error types (merged namespace) | the `export namespace <Resource>` block at the foot of the same file |
-| Client construction, resource getters | `src/client.ts` |
-| `ClientOptions` fields | `src/client-options.ts` |
-| Environments, base URLs, override merging | `src/servers.ts` |
-| Auth scheme wiring, token endpoint, credential placement | `src/auth-schemes.ts`, `src/core/auth/credentials.ts`, `src/core/auth/oauth2-strategies.ts` |
-| The transport: the attempt loop, `fetch` resolution, 401 re-authentication, 2xx-vs-error split | `src/core/raw-client.ts` |
-| Error classes and `ErrorKind` | `src/core/errors.ts`, `src/core/api-error.ts` |
-| `ApiPromise`, `ApiResult`, `.asApiResult()`, the `Symbol.species` behaviour | `src/core/api-promise.ts` |
-| `Pageable` and `PageableApiResult` — the lazy walk a paged operation returns, `.pages()`, and `.asApiResult()` on a walk | `src/core/pagination/pageable.ts` |
-| The four paging states — offset, page, cursor and link — and the stop rule each applies | `src/core/pagination/states/offset-state.ts`, `src/core/pagination/states/page-state.ts`, `src/core/pagination/states/cursor-state.ts`, `src/core/pagination/states/link-state.ts` |
-| `RequestOptions` (it is `{ signal, retry, logging, hooks }` and nothing else) | `src/core/api-request.ts` |
-| `HookOptions`, `BeforeRequestHook`, `AfterResponseHook`, `HookContext` | `src/core/hooks.ts` |
-| `RetryOptions` and its defaults, `RequestRetryOptions`, backoff, `Retry-After`, `RetryAttempt` | `src/core/retry.ts` |
-| `LoggingOptions` and its defaults (`defaultLoggingOptions`), `RequestLoggingOptions`, `Logger`, `LogDetails` | `src/core/logging.ts` |
-| Schema decode/encode, `SchemaError`, `Encoded<T>` | `src/core/validation/schema-error.ts` and its directory |
-| Wire serialization per channel | `src/core/param-value.ts`, `src/core/url.ts`, `src/core/headers.ts`, `src/core/params.ts` |
-| What an operation *means* — field semantics, coupling rules | `api-reference.md` at the package root |
+| An operation's method body: the request it builds and the errors it maps | `src/controllers/<resource>Api.ts` |
+| A model's schema | the **Source** file named above the model's table |
+| Client getters, client shortcuts, `withConfiguration` | `src/client.ts` |
+| `Configuration`, `Environment`, `fromEnvironment` | `src/configuration.ts` |
+| The defaults (timeout, retry) | `src/defaultConfiguration.ts` |
+| How the `Authorization` value is built | `src/authProvider.ts` |
+| The `Idempotency-Key` interceptor and the poll helpers | `src/extensions.ts`, hand-written by UnivaPay |
+| `ExternalApiError` | `src/errors/externalApiError.ts`. `ApiError` and `ApiResponse` come from `@apimatic/core`, re-exported through `src/core.ts` |
+| Webhook handlers and their guards | `src/events/webhooks/` |
 
-**Read scoped.** Search for the one symbol and read the lines around it rather than whole files, and never copy a design comment's rationale onto a contract sheet — the sheet carries facts an implementer must obey, not the reasoning behind them.
+**The map carries shapes. What an operation *means* lives in the business rules**, in `<plugin-root>/business-rules/`: which values a field accepts beyond its type, a rule that couples two fields, what the API does on its own. A value you "know" for a field that the map types as a plain `string` is a lookup, not something to recall.
 
-Keep lookups cheap — the rules that keep a session's context small:
+**Keep lookups cheap:**
+- Collect the contracts for every in-scope operation in one pass, onto the contract sheet.
+- Open a model's fields only where the task sets them.
+- Never grep the package to *find* a type: the map's model index names its page.
 
-- Collect the contracts for **every** in-scope operation in **one** pass — signature, request fields with channels and defaults, required members, the error arms, enum values — into a short **contract sheet** in your plan, then implement from the sheet. Don't re-open a map page per field, and never re-look-up a fact the sheet already carries.
-- Recurse into a model's members only where the task actually sets them — a full transitive expansion is hundreds of rows nobody needs.
-- **Never grep, glob or `find` the package to *locate* a type** — the map is the locator, and it says so. Grep only *inside* the file its **Type sources** table names, for the symbol. A sweep for a cross-cutting *shape* is a different question and is fine: "every field typed `unknown`", "every required-nullable member" are things nothing indexes, and one targeted `grep -rn` over `src/models/` is the right tool — record what it found on the sheet.
-- Trust the compiler over this page: if a name here ever fails to type-check, re-read the file the table above names and report the drift; never patch around it from memory.
+## SDK source — read it in place
 
-## Validation — what `validate` checks
+You will constantly need to confirm real constructor/method signatures, model interfaces, schemas, enum
+values, and error types, and the **only reliable way** is to read the SDK source.
 
-Every model's schema const — the value export beside its type — carries `encode`, `decode` and `validate`. `validate(value)` runs `encode`'s rules without the conversion and without the throw, and returns `{ success: true }` or `{ success: false, message }`, the message naming every failing field under its full path and why.
+Clone it and read the clone — it is the source this pack documents:
 
-**This SDK enforces the spec's value constraints on `validate`.** A model or union whose spec declares one — `minLength`/`maxLength`, `pattern`, `format` (`email`, `hostname`, `ipv4`, `ipv6`, `uri`, `uri-reference`, `json-pointer`), `minimum`/`maximum`, `exclusiveMinimum`/`exclusiveMaximum`, `multipleOf`, `minItems`/`maxItems`/`uniqueItems`, `minProperties`/`maxProperties`, and the keywords on an array's `items` and a map's `additionalProperties` — carries it on its public schema: `bankTransferTransactionTokenSchema.validate(value)` reports it and `encode` throws on it. A model that nests a constrained one checks the nested value too and reports its fields under their full path. The operations do **not** apply those constraints: they encode and decode through a structural twin the module keeps for itself, `bankTransferTransactionTokenInternalSchema`, which the package root does not export, so a value the service would accept is never refused on the way out, and a service ahead of the spec is never refused on the way in. A schema's own file says which it is: a constrained one declares the twin beside the public one. An operation whose own request fields carry a constraint exports a request schema beside its request type — `Charges.listAllChargesRequestSchema` — which the operation never runs: pass the request object to its `validate` before the call, the way a model's schema checks a model. Every other schema is structural only, and its `validate` checks shape alone.
+```bash
+git clone --filter=blob:none --branch 1.2.3 https://github.com/univapay/univapay-client-js-sdk
+```
 
-## Sensitive data — check the request models before you log anything
+**`--branch 1.2.3` checks out the tag (detached HEAD); your install is pinned.** Check out the tag matching `1.2.3`, the version installed above before you read anything from it — a branch keeps moving after a release is cut, so the default checkout can be a different SDK than the one you compile against, and nothing in the tree will tell you. `git ls-remote --tags` lists what the repository offers; if no tag matches, treat every signature you read as unconfirmed rather than assuming it carried over. Clone it outside your project directory and treat it as read-only. It is a reference, not a dependency: what you build against is the package installed above, never this checkout.
 
-Whether this API's **request** models carry fields you must never log — card or bank numbers, personal data, message content — is a shape question: each request model's declaring file (the map's **Type sources** table names it) lists every field. If the scope touches such a field: `logRequestBody` stays off, because it logs a JSON request body **verbatim** and masks a form body only by deny-list; no call on those paths passes a per-call `RequestOptions.logging` level, which turns the request body on for that call whatever the client set; `ClientOptions.logging.level` is set explicitly in production, because without a `logger` or a `level` the `UNIVAPAY_PUBLIC_API_LOG` environment variable turns logging and both header switches on with no code change; and your own diagnostics never echo a request body on those paths (`typescript-configuration-resilience` has the details).
+An existing copy, if you already have one, is in whichever of these applies:
 
-The SDK never logs a response body, but your own code may. Responses are often safer — many APIs return masked variants of what requests carry raw — but that too is a model-shape fact: check the response model's file before assuming.
+- the **unpacked SDK directory** you were given (the one containing `package.json` and `src/`); or
+- **`node_modules/univapay-client-sdk/`** in your project, once installed.
 
-## Integration workflow — load the companion skill at each step
+Treat it as a read-only reference and grep it locally.
 
-Before you write the code for each step, load the named companion skill — even if you have already read the relevant file. A typical integration reaches them in this order:
+Layout — grep here first:
 
-1. **Client construction & lifetime** — load **typescript-client-initialization** before you write `new UnivapayPublicApiClient(…)`. The client is **long-lived and app-scoped**, never rebuilt per request, because the resource getters live on it.
-2. **Authentication** — load **typescript-authentication** before you set credentials. The scheme is `jwtToken` on `ClientOptions`. Load secrets from the environment or a secret store, never hardcode.
-3. **Calling an endpoint** — load **typescript-calling-endpoints** before the first `client.<resource>.<operation>(…)` call.
-4. **Models** — load **typescript-models** the moment a request/response member is not a plain string or number.
-5. **Error handling** — load **typescript-error-handling** before you write any `try/catch`. Every operational failure is **one family**, `UnivapayPublicApiError`, narrowed on `err.kind`.
-6. **Configuration & resilience** — load **typescript-configuration-resilience** when you set the base URL, timeouts, retries, proxies, TLS, or logging, or walk a paged operation.
-7. **Testing** — load **typescript-testing** before you stub the SDK. The seam is **`ClientOptions.fetch`**.
+- `package.json` — the npm `name`, `version`, `engines.node`, and the `@apimatic/*` `dependencies`.
+- `src/configuration.ts` — the `Configuration` fields, the `Environment` enum, and the env-var names in
+  `fromEnvironment`.
+- `src/client.ts` — the `Client` constructor and (for OAuth) the manager properties.
+- `src/controllers/*.ts` — operation methods and their `Promise<ApiResponse<T>>` signatures.
+- `src/models/` — request/response interfaces, enums, and `containers/` unions; **this is where field
+  names live**.
+- `src/errors/` — the typed error subclasses this build emits, one per error response model.
+- `README.md` and `doc/` — a generated, human-readable index: `doc/client.md`, `doc/auth/*.md`,
+  `doc/controllers/*.md`, `doc/models/*.md`, `doc/http-client-options.md`, `doc/retry-configuration.md`,
+  `doc/api-response.md`, `doc/api-error.md`, `doc/environment-based-client-initialization.md`,
+  `doc/configuration-based-client-initialization.md`. In the repository it is the fastest way to find
+  an operation, its parameters and a copy-pasteable snippet, then open the `.ts` file for the exact
+  signature. **It is not in the installed package** — everything else listed above ships in
+  `node_modules/univapay-client-sdk/`; `doc/` does not, because npm publishes only what the `files`
+  field names. With only the package, `src/controllers/*.ts` is the equivalent starting point.
+
+## Placeholder legend
+
+Samples across these skills write `{...}` for a name that differs per API. **They are never literal** —
+resolve each one from this SDK's source before you write code. Anything already concrete for this SDK
+(package id, API name, install command) is spelled out for you; if it is still in braces, it is yours to
+look up.
+
+| Placeholder | Stands for | Resolve it from |
+| --- | --- | --- |
+| `{Controller}` | a controller class — the whole name, postfix included, as in `new {Controller}(client)` | the `export class` lines in `src/controllers/`. The postfix (`Api`, `Controller`, …) is this SDK's controller-naming setting, fixed at generation time — read the real names rather than assuming either |
+| `{group}`, `{apiGroup}` | the resource group a controller covers | the file names under `doc/controllers/` |
+| `{operation}` | an operation method on a controller | the controller class body, or the operation list in `doc/controllers/{group}.md` |
+| `{RequestType}`, `{Payload}` | a request or response model interface | `src/models/` — one file per model, each paired with a `{name}Schema` |
+| `{Name}`, `{field}` | a model interface and one of its properties | the interface declaration in `src/models/` |
+| `{optionalParam}`, `{requiredParam}`, `{pathOrQueryParam}` | one parameter of the operation you are calling | the operation's signature in `src/controllers/` |
+| `{EnumType}`, `{enumType}`, `{enumProp}` | a generated enum and a property typed by it | the enum declarations in `src/models/` |
+| `{Union}`, `{Variant}`, `{V}` | a oneOf/anyOf union and one of its variants | `src/models/containers/` |
+| `{ItemType}`, `{Collection}` | the element type of an array property | the property's declared type in `src/models/` |
+| `{ErrorModel}`, `{ErrorResponse}` | a generated error class | `src/errors/`. Named after the error **response model**, never after the operation — see **typescript-error-handling** |
+| `{scheme}` | an auth scheme, as it names the client's manager property | grep `public .*Manager` in `src/client.ts` |
+| `{basicAuthProperty}`, `{bearerAuthProperty}`, `{apiKeyProperty}`, `{oAuthProperty}` | the credentials property for one scheme on `Configuration` | the credential fields in `src/configuration.ts` |
+| `{keyName}` | the literal header or query parameter an API key is sent as | the API-key credentials type in `src/configuration.ts` |
+| `{ScopeEnum}` | the generated OAuth scope enum — emitted only for a grant whose spec declares scopes, so an SDK can have none | the `### Scopes` table in that grant's `doc/auth/*.md` (usually the authorization-code one); if the grant's credentials object in `src/configuration.ts` has no `oAuthScopes`, there is no enum |
+| `{id}`, `{placeholder}` | a stand-in value in an example | nothing to look up — substitute your own |
+
+Any other `{...}` you meet is a local example; the sentence around it says what belongs there.
+
+## Sensitive data
+
+Two kinds of request carry data that must never be logged:
+- `TokenCreateCardData`: `cardNumber`, `expMonth`, `expYear` and `cvv` (wire names `card_number`, `exp_month`, `exp_year`, `cvv`);
+- the direct debit bank-account requests: `bankAccountNumber`.
+
+The SDK logs the request body exactly as sent, card data included, whenever `logging.logRequest.logBody` is on. So on these paths:
+- pass no `logging` option, or one without `logBody`;
+- keep `maskSensitiveHeaders` at its default, `true`. With `false`, logged headers include the full `Authorization` value, which is the app secret plus the token;
+- don't log `error.message` from `createTransactionToken` as it is. An `ArgumentsValidationError` message repeats the value you passed, card number and CVV included;
+- don't use a `Client.fromEnvironment` client as it comes, because it logs every request line. Remove its logging first: `.withConfiguration({ logging: undefined })`;
+- never let your own diagnostics echo a request body.
 
 ## What a contract sheet must carry for this SDK
 
-Beyond the usual signatures and model members, a contract sheet for the Univapay Public API TypeScript SDK is incomplete without these, because each one is a decision the implementer cannot make correctly from the signature alone.
+Beyond signatures and model fields, a contract sheet for this SDK needs the items below. Each is a decision the signature alone can't settle. The details are in `sdk-map.md`.
 
-1. **Which host each deployment talks to**, and where that is set. Any host but the one this SDK knows is a `serverOptions` base-URL override (see *Hosts*) — give the override path on the sheet.
-2. **5 operations resolve to `undefined` (`charges.captureCharge`, `transactionTokens.deleteTransactionToken`, `subscriptions.cancelSubscription`, `webhooks.deleteWebhook`, `directDebit.deleteDirectDebitBankTransfer`)** — `await` gives you nothing to inspect, so **`.asApiResult()` is the only way to observe their status and headers** — decide the mode at write time, not by retrofit.
-3. **The exact request type name per operation**, taken from the **Signature** bullet — 2 operations take `<Operation>RequestParams`, not `<Operation>Request`.
-4. **Every request field with its channel, wire name and default**, because the request object is flat and channel-blind and the SDK fans fields out. An omitted field that has a default is still sent with that default, so a defaulted header shapes the response whether or not the sheet mentions it. Every non-GET operation sends an `Idempotency-Key` header, minted once per call and not on the request object, unless it takes that header as a request field — `typescript-configuration-resilience` has what that key does and does not deduplicate. Any caller-supplied idempotency or request-id field is the only idempotency that spans calls, and `RequestOptions` is `{ signal, retry, logging, hooks }` only; a call's `beforeRequest` hook sees the minted key and can replace it.
-5. **Required vs optional vs required-nullable** for every model member the task sets — `f: T` required, `f?: T` omit the key, `f: T | null` required and nullable.
-6. **The error arms for each operation in scope, with the status each covers — and the warning that arm tags are schema-derived, not status codes.** Every operation rejects with its own `ApiError` subclass narrowed on `err.payload.kind`. A tag comes from the arm's body schema and is resolved per operation, so the same tag means different statuses on different operations, and a shared helper that switches on `kind` across operations is a bug — `typescript-error-handling` has the naming rule, the always-present `"undeclared"` arm and the matcher precedence. 73 of 76 operations declare typed error bodies; the rest reject with the base `ApiError`.
-7. **That a malformed or drifted 2xx body rejects with `DecodeError`, not `ApiError`, in both response modes** — and the members the implementer has to assert on, because a thin or truncated body decodes without complaint.
-8. **The retry policy this integration needs.** Retrying is on by default — `ClientOptions.retry` sets it for the client and `RequestOptions.retry` overrides it per call — so the sheet says whether the defaults fit, which writes (if any) join `httpMethodsToRetry`, since a write is repeated only when the policy names its method, and the per-attempt timeout.
-9. **The logging this integration needs.** Logging is off by default — `ClientOptions.logging` sets it for the client and `RequestOptions.logging` sets one call's level — so the sheet says whether it stays off and, where it is on, the level, the logger, and whether headers and the request body are logged (**Sensitive data**, above).
-10. **The hooks this integration needs, if any.** There are none by default — `ClientOptions.hooks` runs on every call and `RequestOptions.hooks` adds to them for one call — so the sheet names each header, trace or metric the task puts on the wire or reads off it, which list it goes in (`beforeRequest` or `afterResponse`), and whether it is client-wide or per call.
-11. **That the SDK performs no streaming at all**, and that `ClientOptions.fetch` is the one seam where it can be added — so whatever the task needs there is yours to build or deliberately omit. Say which.
-12. **That no operation is paged** — every call is one request, so any list the task pages is driven by hand, with a bound of its own.
-13. A **REQUIRED READING** block naming the `typescript-*` companions that govern the steps, with inline `MUST load` pointers.
+1. **The host, and where it is set.** It's `baseUrl` (default `https://api.univapay.com`), plus `directDebitBaseUrl` for the 14 direct debit operations. Test or live mode comes from the app token, not from a setting.
+2. **The exact argument order for each operation**, from its **Signature**.
+   - Arguments are positional; pass `undefined` to skip an optional one.
+   - `idempotencyKey` comes **before** `body` in the 11 operations whose body is optional, and after it in the 14 whose body is required.
+3. **Every request field, with its wire name and where it goes** (path, query, header or JSON body).
+   - Metadata keys other than `orderId`, `univapayName` and `univapayPhoneNumber` go in `metadata.additionalProperties`.
+   - Metadata values must be a string, number, boolean, `null`, or an array of those. A value that is an object, or an array holding an object, is dropped with no error. On transaction tokens it fails the whole read instead.
+   - A key that isn't part of the model is sent exactly as written. It is not converted to snake_case.
+4. **Your own `Idempotency-Key` on every write.** If you leave the argument out, the SDK sends a new random key on every call; only the SDK's own retries reuse it. So when your code repeats a call, nothing protects it. Pass the key that the DUPLICATE CLAIMS row stores.
+5. **Required, optional or nullable**, for every model field the task sets: `f: T`, `f?: T` or `f: T | null`.
+6. **The error rows for each operation in scope: status → class.** The same status can throw a different class on different operations.
+   - `ExternalApiError` carries `result`, the parsed body. It is `undefined` when the body is empty; for example, the API answers an unknown charge id with an empty 404.
+   - `ApiError` never has `result`, so read `JSON.parse(error.body).code`. 409 and 429 are always a plain `ApiError`, so `IDEMPOTENCY_KEY_CONFLICT` and rate limits only reach you through the body.
+   - `createSubscription`, `listAllSubscriptions` and `listStoreSubscriptions` have no error rows: every non-2xx status throws a plain `ApiError`.
+7. **A 2xx body that doesn't fit its model throws `ResponseValidationError`, not `ApiError`.**
+   - Every enum is closed, so a value the SDK doesn't list (a new status, say) fails the whole response.
+   - So does a number where the model has a string, such as a numeric `metadata.order_id`.
+   - Say what the code does when this happens.
+8. **"No answer" failures are axios errors** (`error.isAxiosError`, with `error.code` set to `ECONNABORTED` after a timeout or `ECONNREFUSED` when nothing is listening). They are not `ApiError`s, and their class isn't exported.
+9. **The retry policy.** Retries are off by default. If the task turns them on:
+   - no retry happens while `maximumRetryWaitTime` is `0`;
+   - while `retryOnTimeout` is `true`, every status with an error row is retried, 400, 401, 404 and 409 included. See *Retry trap* in `sdk-map.md`;
+   - the 3 subscription operations without error rows follow only `httpStatusCodesToRetry`.
+10. **The logging.** It is off by default. Any `logging` object turns it on, and `logBody` writes card data (see *Sensitive data* above).
+11. **List walks.**
+    - Every list except `listBankTransferLedgers` returns `{ items, hasMore }` and takes `limit`, `cursor` and `cursorDirection`. To get the next page, make the same call with the same `limit` and `cursor` set to the last item's id. Stop when `hasMore` is `false`.
+    - Give each walk a bound of its own.
+    - The `cardBrand` filter on transaction history doesn't work through this SDK.
+12. **The module format.** A plain Node ESM `import` of this SDK fails, so state how this project loads it: `require`, `createRequire`, `tsx` or a bundler.
+13. **Webhooks.** The SDK's handlers return real deliveries as unknown events, so the receiver parses the raw JSON and switches on `event` (see `typescript-univapay-payments`).
+14. **Poll helpers, if used.**
+    - They are missing from the published types, so use the client shortcuts instead (`client.pollCharge(...)` and so on).
+    - When the attempts run out, they resolve with the last response instead of throwing, so check `result.status`.
+15. **A REQUIRED READING block** naming the `typescript-*` companions that govern the steps, with inline `MUST load` pointers.
 
+## Integration workflow — load the companion skill at each step
+
+**Load the skill named for a step before you write that step's code, even where you have already read
+the source.** The generated source is authoritative for the SDK's *surface*; these skills carry the
+usage rules a signature cannot show, and each one names the trap that surface hides.
+
+1. **typescript-client-initialization** — before you construct the client.
+2. **typescript-authentication** — before you set credentials, and when a call returns 401 or 403.
+3. **typescript-calling-endpoints** — before the first operation call.
+4. **typescript-models** — as soon as a request or response field is not a plain string or number.
+5. **typescript-error-handling** — before your first `try`/`catch` around a call.
+6. **typescript-configuration-resilience** — before you ship. Its subject is the client's *defaults*, which apply whether or not you set anything, so this step is not conditional on changing one.
+7. **typescript-testing** — before you stub the SDK.
+
+## Next
+
+- Step 1, construct the client → **typescript-client-initialization**
+
+Every skill below ends with the step after it, so the footers walk the workflow above in order rather than offering a menu beside it.

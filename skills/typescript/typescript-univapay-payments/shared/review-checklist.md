@@ -19,13 +19,14 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 - **Error replies for events the app doesn't handle**, or a thrown error that becomes a 4xx/500 reply. These switch the webhook off. `background.15`
 - **A redirect on the webhook route** (HTTP→HTTPS, a trailing slash, auth middleware). `background.14`
 - **No check that the event belongs to this app**: no lookup by `data.metadata.order_id` or by stored id, so other apps' events are acted on. `background.76`
-- **Events matched with the SDK's `parseUnivapayPublicApiWebhookEvent` guards** (`isRefundFinished()`, `isSubscriptionPayment()`, …): all but the two charge guards compare camelCase names and never match the real snake_case events, so those events are silently ignored. Switch on the raw `event` string, as `webhook-receiver.ts` does. (SDK, tested)
+- **Events parsed with the SDK's webhook handlers** (`ChargeHandler`, `SubscriptionHandler`, …) or matched with their `isXxxEvent()` guards: every real delivery parses as an unknown event, and the guards match several events at once, so events are ignored or mixed up. Switch on the raw `event` string, as `webhook-receiver.ts` does. (SDK 1.2.3 bugs M1, S6)
+- **`token_three_ds_updated` set up through the SDK** (`createWebhook`, `updateWebhook`, `WebhookTrigger.TokenThreeDSUpdated`): the real name is refused by the SDK and the SDK's spelling by UnivaPay, and `getWebhook` fails on such a webhook. **Any `listWebhooks` through the SDK** fails when one listed webhook has it (use `listWebhooksRaw`). Use `createWebhookRaw` / `getWebhookRaw` / `updateWebhookRaw`. (SDK 1.2.3 bug H3) `createWebhook.7`
 - **`express.json()` mounted before the webhook route**: the raw body is lost.
 - **The webhook object or the `Authorization` header is logged.** `createWebhook.8`
 - **No way back from a switched-off webhook**: no stored webhook id, no `active` check, no catch-up job. `background.17` (`recovery-runbooks.md` (a))
 - **Catch-up built on `listWebhookEvents`.** It answers 401 to a store app token. `listWebhookEvents.1`
 - **`ensureWebhookActive` run on a timer for every webhook id in the config, or without `expectedUrl`**: a deleted webhook reads like a switched-off one, and switching it on brings it back. Call it only for the id in use now, with `expectedUrl`. `deleteWebhook.1`
-- **A missing entry in the webhook list taken as "no webhook"**: the default list leaves switched-off and deleted webhooks out, and the SDK's boolean `active` filter can't ask for them (SDK, tested). GET by the stored id. `listWebhooks.2`, `listWebhooks.1`
+- **A missing entry in the webhook list taken as "no webhook"**: the default list leaves switched-off and deleted webhooks out, and the SDK's boolean `active` filter can't ask for them (SDK 1.2.3 bug S7). GET by the stored id. `listWebhooks.2`, `listWebhooks.1`
 
 ## Charge status
 
@@ -43,7 +44,8 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 
 - **The amount comes from the request body**, a hidden field or a `data-amount` the server didn't set. Price on the server from your own catalogue or order. (app rule)
 - **"Paid" without matching the charge to the order**: no check of `charge.metadata.orderId` and of the amount and currency (`checkLinkPayment`). (app rule; `createCharge.26`)
-- **`metadata.order_id` sent as a number** (e.g. `order_id: order.id` with a numeric id, or set by another system). The SDK then fails to read that charge and the whole `listStoreCharges` page, which breaks catch-up. Always send it as a string. (SDK, tested)
+- **`metadata.order_id` sent as a number** (e.g. `order_id: order.id` with a numeric id, or set by another system). The SDK then fails to read that charge and the whole `listStoreCharges` page, which breaks catch-up. Always send it as a string; list with `chargesCreatedSince`, which reads such a page from the raw reply. (SDK 1.2.3 bug H1)
+- **A list or GET that throws `ResponseValidationError` treated as "UnivaPay is down"**: UnivaPay answered, but one value is outside the SDK's closed lists (e.g. a `bimonthly` subscription) and the whole reply fails. Read it with `readUnivapayError`: `problems` names the field and value; page with `storeSubscriptions` / `chargesCreatedSince`. Don't create `bimonthly` subscriptions with SDK 1.2.3. (SDK 1.2.3 bugs N1, M9) `createSubscription.42`
 - **A token id from the browser charged or subscribed without a server check**: no `getTransactionToken`, no `type` / `paymentType` / `active` check, no owner check. `createTransactionToken.9`, `createSubscription.9`; charging another customer's card is an app rule.
 - **The secret in browser code or in a payment link**, or server calls made with the app token alone. `every-request.1`, `every-request.8`, `getCheckoutInfo.1`
 - **Payment links made by hand** (in the console or pasted), with no `order_id` from the server, so payments can't be matched to an order. Build links with `buildPaymentLink` (`payment-links.md`). (app rule)
@@ -52,11 +54,12 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 
 ## Idempotency and retries (`templates/idempotency.ts`)
 
-- **No `idempotencyKey` on `createCharge`, `createRefund`, `createSubscription` or `createTransactionToken`.** The SDK then sends no key (SDK, tested), so a retry or a double click charges twice. `every-request.20`, `every-request.21`
+- **No `idempotencyKey` of your own on a write** (`createCharge`, `createRefund`, `createSubscription`, `createTransactionToken`, `suspendSubscription`, …). The SDK then sends a NEW random key on every call, so a retry or a double click charges twice. (SDK 1.2.3 bug M5) `every-request.20`, `every-request.21`
 - **A new random key on each retry**, e.g. `randomUUID()` inside the retry loop. Same action → same key. `every-request.21`
 - **A new order made on each tap of "pay"** (e.g. "pay with saved card"): each order has its own key, so a double tap charges twice. Create the order once, before the pay button. (app rule)
 - **One key reused for a different amount or action.** The first result comes back silently, or you get 409. `updateCharge.1`, `every-request.23`
 - **The same key reused after a failed charge**: it returns the old failed charge. A new attempt needs a new key. `every-request.21`
+- **"Reuse or new attempt" decided after the call** (from the order state once the charge settles, or with the attempt stored only after createCharge): a second request in that gap gets a new attempt number, new keys and a second charge. Claim the attempt before the first UnivaPay call, with no `await` between the check and the claim; reuse it while it is being created, `pending` or `awaiting`; start a new one only after `failed` or `canceled`. The same key returns the same charge `every-request.21`; the claim is an (app rule).
 - **Capture or cancel protected only by the key.** They ignore it, so guard in the app. `captureCharge.16`, `createCancel.14`
 - **Status read from a replayed create reply.** It is the first stored reply, e.g. still `pending`. `createRefund.23`
 - **No branch for `CHARGE_TOO_QUICK` or payment error 311** on repeat charges or subscriptions on one card. Test mode never returns it, so only a unit test catches a missing branch. `createCharge.37`, `createCharge.36`, `createSubscription.25`, `createSubscription.26`
@@ -99,7 +102,7 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 ## Saved cards and 3-D Secure (`saved-cards.md`, `three-ds-server-charges.md`)
 
 - **No hand-off when the bank asks**, the issuer page in an iframe, or the wrong issuer-token endpoint. `getChargeThreeDsIssuerToken.2`, `getChargeThreeDsIssuerToken.3`, `getChargeIssuerToken.7`
-- **SDK field names (`requestData`) posted to the issuer** instead of the wire names (`payloadToWireFields`). `getChargeThreeDsIssuerToken.2`
+- **SDK field names (`requestData`) posted to the issuer** instead of the wire names (`payloadToWireFields`). (SDK 1.2.3 bug S5) `getChargeThreeDsIssuerToken.2`
 - **A charge waiting for 3-D Secure cancelled.** `createCancel.5`
 - **`three_ds.mode: "provided"` sent, or `three_ds.mode` left out on server charges** and `normal` assumed. `createCharge.41`, `createCharge.42`
 - **A bounded recurring token (`usage_limit`) charged twice in its period.** `createCharge.60`
@@ -110,7 +113,10 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 ## Konbini, bank transfer and PayPay (`konbini-bank-paypay-api.md`, `checkout-widget.md`)
 
 - **No payment number, slip or bank account shown to the customer**, or read from the create reply. Read them once the charge is `awaiting`. `createCharge.83`, `getTransactionToken.3`, `getCharge.2`
-- **`metadata.internal_convenience_payment_number` read at the top level** of the SDK's `metadata`. It is under `metadata.additionalProperties`. (SDK, tested)
+- **`metadata.internal_convenience_payment_number` read at the top level** of the SDK's `metadata`. It is under `metadata.additionalProperties`. (SDK 1.2.3 bug S4) (SDK, tested)
+- **Metadata values that are objects or arrays**, e.g. `metadata: { additionalProperties: { cart: { … } } }`: UnivaPay refuses an object (`updateCharge.6`), and SDK 1.2.3 drops it before sending without an error, so it is lost silently (SDK, tested). An array is stored as separate `name[0]`, `name[1]` keys (`updateCharge.7`). Flatten values to text, numbers or booleans. Keys can't be removed once set (`updateCharge.8`).
+- **An online token's `brand` or `callMethod` built from a plain string** (`as BaseOnlineDataBrand`): an unlisted value is sent with camelCase keys. Use the enum members, or check the string first. (SDK 1.2.3 bug N8) (SDK, tested)
+- **A token's card data read straight from `token.data`** after `if (token.paymentType === "card")`: the SDK's types don't narrow that way, so the code doesn't compile or is cast wrongly. Use `cardTokenData(token)`. (SDK, tested)
 - **Pay-easy without the institution number 58091.** `createCharge.84`
 - **A token reused after a failed or expired attempt.** Make a new token and charge. `background.51`, `background.54`, `background.49`
 - **Bank-transfer amounts not compared with the order.** `background.52`, `background.53`
@@ -121,9 +127,20 @@ Each line: **what to look for in the code** → what is right, then the rule ids
 ## Errors and responses (`templates/univapay-errors.ts`)
 
 - **Error handling that needs a JSON body.** Some 401, 403 and 429 replies have none. `every-request.10`, `every-request.18`, `cancelSubscription.3`
+- **Error code read from `error.result`.** For createSubscription, listStoreSubscriptions and every 409, 429 and 5xx the SDK throws a plain `ApiError` with `result` undefined; the code is only in `body`. Use `readUnivapayError`. (SDK 1.2.3 bug M2/L2) (SDK, tested)
+- **`String(error)`, `error.message` or the whole error object logged** for a refused SDK argument (`ArgumentsValidationError`): its message repeats the value, card number and CVV included. Log `describeUnivapayFailure(readUnivapayError(e))`. (SDK 1.2.3 bug N6) (SDK, tested)
+- **`catch (e) { if (e instanceof ExternalApiError) … }` only:** other failures are `ApiError`, `ResponseValidationError`, `ArgumentsValidationError` or network errors, and fall through. (SDK, tested)
 - **Every refusal shown as "payment failed".** Branch on `code`, `errors[].field` and `errors[].reason`. `every-request.10`, `every-request.11`
 
 ## Keys and modes (`go-live.md`)
 
 - **A test-mode app token (or its tokens) used in production, or tokens mixed across modes.** `every-request.31`, `createCharge.14`, `createCharge.59`
 - **A base URL other than `https://api.univapay.com`.** `every-request.9`
+
+## Running the SDK (SDK 1.2.3)
+
+- **`logging.logRequest.logBody: true`** (or `logResponse.logBody`) on the client: card numbers and CVVs go to your logs. Never enable it. (SDK 1.2.3 bug M10)
+- **A `logging` object on the client, or a client from `Client.fromEnvironment`**: every request and response line goes to the console whatever `logLevel` says. (SDK 1.2.3 bug N11) (SDK, tested)
+- **The SDK's own retries turned on** (`httpClientOptions.retryConfig`): with `maximumRetryWaitTime` 0 they do nothing; above 0 they also retry a GET on 400, 401, 403, 404 and 409, and a 429 ignores `Retry-After`. Keep them off and use `withIdempotentRetry`. (SDK 1.2.3 bug N12) (SDK, tested)
+- **The app run with plain `node` as an ES module** (`"type": "module"`, `import` of the SDK): it crashes at start with `ERR_MODULE_NOT_FOUND`. Run with `tsx`, or load it with CommonJS `require`; in Vitest inline the package. (SDK 1.2.3 bug N2) (SDK, tested)
+- **`univapay-client-sdk` not pinned** (`^1.2.3`) or no lockfile: this skill and its safe code are tested on exactly 1.2.3. (app rule)

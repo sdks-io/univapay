@@ -12,7 +12,7 @@
 //   GET of the charge, or from a webhook re-read with a GET (see webhook-receiver.ts and payment-status.ts).
 // - Only `successful` means paid (createCharge.26); konbini / bank transfer from a link stay `awaiting` until the
 //   customer pays (createCharge.31).
-import type { UnivapayPublicApiClient } from "univapay-public-api";
+import type { Client } from "univapay-client-sdk";
 import { chargeOutcome, type ChargeOutcome } from "./payment-status.js";
 
 export type LinkPaymentMethod = "card" | "konbini" | "bank_transfer" | "pay_pay_online" | "paidy" | "we_chat_online" | "alipay_online" | "alipay_plus_online" | "d_barai_online";
@@ -30,8 +30,8 @@ export type PaymentLinkInput = {
   failureRedirectUrl?: string;
   /** Pre-fill the customer's email (shown filled in on the form). */
   emailAddress?: string;
-  /** Your order reference. Sent as `order_id`: it arrives on the charge as metadata `order_id` (createCharge.99)
-   *  (SDK: `charge.metadata.orderId`) and on the success/failure redirect as `order_id`. */
+  /** Your order reference, always text. Sent as `order_id`: it arrives on the charge as metadata `order_id`
+   *  (createCharge.99) (SDK: `charge.metadata.orderId`) and on the success/failure redirect as `order_id`. */
   orderId?: string;
   /** Other metadata, sent as plain `key=value` parameters (the console's URL-code builder adds metadata the same way). */
   extra?: Record<string, string>;
@@ -60,8 +60,8 @@ export type LinkPaymentCheck = { outcome: ChargeOutcome; matchesOrder: boolean; 
 
 /** Read the charge from UnivaPay (never from the redirect) and check it really pays THIS order. Mark paid only if
  *  outcome === "paid" && matchesOrder. */
-export async function checkLinkPayment(client: UnivapayPublicApiClient, storeId: string, chargeId: string, order: OrderToMatch): Promise<LinkPaymentCheck> {
-  const ch = await client.charges.getCharge({ storeId, id: chargeId });
+export async function checkLinkPayment(client: Client, storeId: string, chargeId: string, order: OrderToMatch): Promise<LinkPaymentCheck> {
+  const ch = (await client.charges.getCharge(storeId, chargeId)).result;
   const problems: string[] = [];
   if (ch.requestedAmount !== order.amount) problems.push(`amount ${String(ch.requestedAmount)} ≠ order ${order.amount}`);
   if ((ch.requestedCurrency ?? "").toUpperCase() !== order.currency.toUpperCase()) problems.push(`currency ${String(ch.requestedCurrency)} ≠ order ${order.currency}`);

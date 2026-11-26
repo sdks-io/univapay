@@ -20,17 +20,17 @@ Use this when your server charges a saved card (recurring token) and the bank wa
    - `skip`: no 3-D Secure. Only from the server with the secret (`createCharge.98`), and only after UnivaPay enables it (`createCharge.43`).
    - `provided` is refused; external 3-D Secure data uses six other fields (`createCharge.41`, `createCharge.50`).
 
-2. **Create the charge from the server.** Amount from YOUR order; token from the signed-in customer's own saved card; one Idempotency-Key per order attempt (`idempotencyKey("charge", order.id, order.amount, order.attempt)`, `every-request.21`).
+2. **Create the charge from the server.** Amount from YOUR order; token from the signed-in customer's own saved card; one Idempotency-Key per order attempt (`idempotencyKey("charge", order.id, order.amount, order.attempt)`, `every-request.21`). Mark the order `processing` before the call, with no `await` between the check and the change, so a second click gets the same attempt (app rule).
    ```ts
-   client.charges.createCharge({ idempotencyKey, body: { transactionTokenId, amount, currency: "JPY",
-     threeDs: { mode, redirectEndpoint: "https://shop.example/3ds/return" }, metadata: { orderId: order.id } } })
+   chargeSavedCard(client, { storeId, tokenId, amount, idempotencyKey, threeDsMode: "normal",
+     threeDsReturnUrl: "https://shop.example/3ds/return", metadata: { orderId: order.id } })
    ```
-   `chargeSavedCard(…)` does this plus steps 3–4, but it sends no `mode`, so the store's default applies (`createCharge.42`). To send a mode, call `createCharge` as above and then `settleCharge` and `getChargeThreeDsIssuerToken` yourself (with the template's `payloadToWireFields`).
+   `chargeSavedCard` sends `three_ds.mode` and `redirect_endpoint`, waits (step 3) and fetches the hand-off (step 4). Leave `threeDsMode` out and the store's default applies (`createCharge.42`), so always pass it. The raw call is `client.charges.createCharge(idempotencyKey, { transactionTokenId, amount, currency: "JPY", threeDs: { mode: ChargeCreateRequestThreeDsMode.Normal, redirectEndpoint }, metadata: { orderId } })`.
 
 3. **Wait for the charge to leave `pending`.** `settleCharge(client, storeId, id)` (`getCharge.1`). A charge that needs 3-D Secure becomes `awaiting`: outcome `waiting-for-customer` (`createCharge.45`). Set the order to "needs 3-D Secure", not paid and not failed.
 
-4. **Get the hand-off.** While the charge is `awaiting`: `client.charges.getChargeThreeDsIssuerToken({ storeId, id })` returns `call_method: http_post`, a `content_type`, the `issuer_token` URL and a `payload` (`getChargeThreeDsIssuerToken.2`). Before `awaiting`, or on a charge made with `skip`, it is a 404 (`getChargeThreeDsIssuerToken.1`). Don't use `getChargeIssuerToken` (no `three_ds` in the path): it refuses a card charge awaiting 3-D Secure with `UNSUPPORTED_PAYMENT_TYPE` (`getChargeIssuerToken.7`).
-   - Post the payload with its API (wire) field names (`getChargeThreeDsIssuerToken.2`). The SDK renames them (`request_data` → `requestData`, others under `additionalProperties`) (SDK, tested), so rebuild them with `payloadToWireFields(it.payload)`.
+4. **Get the hand-off.** While the charge is `awaiting`: `(await client.charges.getChargeThreeDsIssuerToken(storeId, chargeId)).result` returns `call_method: http_post`, a `content_type`, the `issuer_token` URL and a `payload` (`getChargeThreeDsIssuerToken.2`). Before `awaiting`, or on a charge made with `skip`, it is a 404 (`getChargeThreeDsIssuerToken.1`). Don't use `getChargeIssuerToken` (no `three_ds` in the path): it refuses a card charge awaiting 3-D Secure with `UNSUPPORTED_PAYMENT_TYPE` (`getChargeIssuerToken.7`).
+   - Post the payload with its API (wire) field names (`getChargeThreeDsIssuerToken.2`). The SDK renames `request_data` → `requestData` and puts the other fields under `additionalProperties` (SDK 1.2.3 bug S5) (SDK, tested), so rebuild them with `payloadToWireFields(it.payload)`.
    - Fetch a fresh hand-off each time you show the page.
 
 5. **Send the customer there as a full-page POST, not an iframe.** Serve `threeDsHandOffPage(handOff)`: an auto-submitting `<form method="post">` to the `issuer_token` URL with the payload as hidden fields. An iframe can be blocked by the page's CSP; a redirect is the safer choice (`getChargeThreeDsIssuerToken.2`, `getChargeThreeDsIssuerToken.3`).
@@ -59,7 +59,7 @@ Use this when your server charges a saved card (recurring token) and the bank wa
 - **Calling the wrong issuer-token endpoint** (`getChargeIssuerToken.7`).
 - **Cancelling a waiting charge** → `CANCEL_NOT_ALLOWED` (`createCancel.5`).
 - **Retrying a failed 3-D Secure charge with the same key**: it returns the old failed charge (`every-request.21`).
-- **Leaving `three_ds.mode` out** and assuming `normal` (`createCharge.42`).
+- **Leaving `three_ds.mode` out** (or `threeDsMode` in `chargeSavedCard`) and assuming `normal` (`createCharge.42`).
 - **`skip` from the browser or without UnivaPay enabling it** (`createCharge.43`).
 - **Sending `three_ds.mode: provided`** (`createCharge.41`).
 

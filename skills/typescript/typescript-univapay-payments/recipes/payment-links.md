@@ -25,7 +25,7 @@ Use `checkout-widget.md` when the customer pays inside your own site; the docs r
 
 2. **Receive webhooks** with the receiver from `shared/webhooks.md`. For `charge_*` events, find the order by `data.metadata.order_id` and ignore unknown orders.
 
-3. **Decide from a GET.** Read the charge with `charges.getCharge({ storeId, id, polling: true })` (`getCharge.1`) and run `checkLinkPayment(client, storeId, chargeId, { amount: order.amount, currency: order.currency })`.
+3. **Decide from a GET.** Read the charge with `(await client.charges.getCharge(storeId, chargeId, true)).result` (`getCharge.1`) and run `checkLinkPayment(client, storeId, chargeId, { amount: order.amount, currency: order.currency })`.
    - **Paid** only when `outcome === "paid" && matchesOrder` and `charge.metadata.orderId === order.id`. Only `successful` is paid (`createCharge.26`).
    - **Paid but not matching** (the link's amount or currency was edited) → "needs attention" for staff: refund, then send a correct link. Never "paid".
    - **`awaiting`** (konbini or bank transfer from the link) → "waiting for the customer" (`createCharge.31`).
@@ -34,9 +34,9 @@ Use `checkout-widget.md` when the customer pays inside your own site; the docs r
 
 4. **The redirect only says which order to re-check.** The success redirect carries `order_id`, `univapayChargeId` and `univapayTokenId` (`createCharge.99`). Use `univapayChargeId` to run step 3 early, then show the stored state. The URL is visible to the customer, so don't decide the result from it (docs: guide/implement/link; `background.19`).
 
-5. **Konbini: show the payment details on your return and order pages.** When the charge is `awaiting`, read the payment number and slip URL from the charge metadata (`createCharge.83`), under `charge.metadata.additionalProperties` in the SDK (SDK, tested), keep them on the order and show them, as `checkout-widget.md` step 6 does. Don't rely on UnivaPay's email (`createCharge.18`).
+5. **Konbini: show the payment details on your return and order pages.** When the charge is `awaiting`, read the payment number and slip URL from the charge metadata (`createCharge.83`), under `charge.metadata.additionalProperties` in the SDK (SDK 1.2.3 bug S4) (SDK, tested), keep them on the order and show them, as `checkout-widget.md` step 6 does. Don't rely on UnivaPay's email (`createCharge.18`).
 
-6. **Catch up** as in `shared/webhooks.md` step 10 (`processPending`, `chargesCreatedSince` matching `metadata.orderId`, GET each charge), and re-enable a stopped webhook with `ensureWebhookActive(client, storeId, id, { expectedUrl })`.
+6. **Catch up** as in `shared/webhooks.md` step 10 (`processPending`, `chargesCreatedSince` matching `orderId`, GET each charge), and re-enable a stopped webhook with `ensureWebhookActive(auth, storeId, id, { expectedUrl })`.
 
 7. **Staff screen.** Each order shows its state and what to do:
    - waiting for payment (with the konbini number when there is one);

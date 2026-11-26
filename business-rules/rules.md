@@ -1,6 +1,6 @@
 # Univapay Public API: business rules
 
-531 rules (213 loud, 318 silent), each taken from the API definition or the docs. A loud rule makes the API refuse the request; a silent one gives a result with no error. Each line: when it applies → what the API does, then what the app must do, the source and the rule's id.
+535 rules (215 loud, 320 silent), each taken from the API definition or the docs. A loud rule makes the API refuse the request; a silent one gives a result with no error. Each line: when it applies → what the API does, then what the app must do, the source and the rule's id.
 
 - Rules for every request: `every-request.md` (33 rules).
 - Rules for jobs the API runs on its own (renewals, retries, webhooks it sends): `background.md` (90 rules).
@@ -13,12 +13,12 @@
 | `GET /stores` (`listStores`) | `operations/stores.md` | 4 |
 | `GET /stores/{id}` (`getStore`) | `operations/stores.md` | 4 |
 | `POST /stores/{storeId}/create_customer_id` (`createCustomerId`) | `operations/stores.md` | 3 |
-| `POST /charges` (`createCharge`) | `operations/charges.md` | 102 |
+| `POST /charges` (`createCharge`) | `operations/charges.md` | 103 |
 | `GET /charges` (`listAllCharges`) | `operations/charges.md` | 5 |
 | `GET /stores/{storeId}/charges` (`listStoreCharges`) | `operations/charges.md` | 5 |
 | `GET /stores/{storeId}/charges/{id}` (`getCharge`) | `operations/charges.md` | 11 |
-| `PATCH /stores/{storeId}/charges/{id}` (`updateCharge`) | `operations/charges.md` | 2 |
-| `POST /stores/{storeId}/charges/{id}/capture` (`captureCharge`) | `operations/charges.md` | 16 |
+| `PATCH /stores/{storeId}/charges/{id}` (`updateCharge`) | `operations/charges.md` | 5 |
+| `POST /stores/{storeId}/charges/{id}/capture` (`captureCharge`) | `operations/charges.md` | 17 |
 | `GET /stores/{storeId}/charges/{id}/issuer_token` (`getChargeIssuerToken`) | `operations/charges.md` | 10 |
 | `GET /stores/{storeId}/charges/{id}/three_ds/issuer_token` (`getChargeThreeDsIssuerToken`) | `operations/charges.md` | 3 |
 | `GET /stores/{storeId}/charges/{id}/bank_transfer_ledgers` (`listBankTransferLedgers`) | `operations/charges.md` | 1 |
@@ -29,7 +29,7 @@
 | `GET /tokens` (`listAllTransactionTokens`) | `operations/transaction-tokens.md` | 5 |
 | `GET /stores/{storeId}/tokens` (`listStoreTransactionTokens`) | `operations/transaction-tokens.md` | 5 |
 | `GET /stores/{storeId}/tokens/{id}` (`getTransactionToken`) | `operations/transaction-tokens.md` | 4 |
-| `PATCH /stores/{storeId}/tokens/{id}` (`updateTransactionToken`) | `operations/transaction-tokens.md` | 6 |
+| `PATCH /stores/{storeId}/tokens/{id}` (`updateTransactionToken`) | `operations/transaction-tokens.md` | 9 |
 | `DELETE /stores/{storeId}/tokens/{id}` (`deleteTransactionToken`) | `operations/transaction-tokens.md` | 2 |
 | `POST /stores/{storeId}/tokens/{id}/three_ds` (`enableTokenThreeDs`) | `operations/transaction-tokens.md` | 5 |
 | `DELETE /stores/{storeId}/tokens/{id}/three_ds` (`disableTokenThreeDs`) | `operations/transaction-tokens.md` | 2 |

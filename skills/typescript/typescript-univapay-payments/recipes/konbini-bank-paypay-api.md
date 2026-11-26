@@ -18,33 +18,33 @@ Use this when you build your own payment screens and call the API from your serv
    - **Bank transfer:** email (`createTransactionToken.18`).
    - **PayPay online:** nothing from the form; email is optional for online tokens (`createTransactionToken.18`). The customer pays on their phone in PayPay.
 
-3. **Create the token on the server** with `client.transactionTokens.createTransactionToken({ idempotencyKey: idempotencyKey("token", order.id, attempt, method), body })`:
-   - Konbini: `{ paymentType: "konbini", type: "one_time", email, data: { customerName, convenienceStore, phoneNumber, expirationPeriod: "P3D" } }`.
-   - Bank transfer: `{ paymentType: "bank_transfer", type: "one_time", email, data: { brand: "aozora_bank", expirationPeriod: "P3D" } }` (`createTransactionToken.30`). Bank transfer allows only `one_time` and `recurring` (`createTransactionToken.12`).
-   - PayPay: `{ paymentType: "online", type: "one_time", data: { brand: "pay_pay_online", callMethod: "http_post" } }`. Online tokens must be `one_time` (`createTransactionToken.12`); `http_post` is the call method the docs list for PayPay (`createTransactionToken.21`).
-   - **Deadline (`expiration_period`):** 30 minutes to 60 days (`createTransactionToken.25`, `createTransactionToken.53`); left out, the console deadline applies and the token shows `expiration_period: null` (`createTransactionToken.25`), which the SDK reads fine for konbini and bank tokens (SDK, tested). It reads back as hours, e.g. `P3D` → `PT72H` (`createTransactionToken.29`). A konbini `expiration_time_shift` is a time with zone such as `23:59:00+09:00`, and needs a period of one day or more (`createTransactionToken.26`, `createTransactionToken.27`). 7-Eleven, Seicomart and Pay-easy ignore the time of day, also in `capture_at`: count their deadline as the end of that day yourself (`createTransactionToken.28`).
+3. **Create the token on the server** with `(await client.transactionTokens.createTransactionToken(body, idempotencyKey("token", order.id, attempt, method))).result` (the key is the 2nd argument). Enum fields take the SDK's enums (`TransactionTokenCreateRequestPaymentType.Konbini`, `TransactionTokenCreateRequestType.OneTime`, `BaseKonbiniDataConvenienceStore.FamilyMart`, …):
+   - Konbini: `{ paymentType: Konbini, type: OneTime, email, data: { customerName, convenienceStore, phoneNumber, expirationPeriod: "P3D" } }`.
+   - Bank transfer: `{ paymentType: BankTransfer, type: OneTime, email, data: { brand: "aozora_bank", expirationPeriod: "P3D" } }` (`createTransactionToken.30`). Bank transfer allows only `one_time` and `recurring` (`createTransactionToken.12`).
+   - PayPay: `{ paymentType: Online, type: OneTime, data: { brand: BaseOnlineDataBrand.PayPayOnline, callMethod: BaseOnlineDataCallMethod.HttpPost } }`. Use the enum members. A `brand` or `callMethod` the SDK doesn't list (e.g. from a string cast) is sent without an error but with camelCase keys (`callMethod`), so UnivaPay never gets `call_method` (SDK 1.2.3 bug N8) (SDK, tested); check strings from config against `Object.values(BaseOnlineDataBrand)` and `Object.values(BaseOnlineDataCallMethod)` first. Online tokens must be `one_time` (`createTransactionToken.12`); `http_post` is the call method the docs list for PayPay (`createTransactionToken.21`).
+   - **Deadline (`expiration_period`):** 30 minutes to 60 days (`createTransactionToken.25`, `createTransactionToken.53`); left out, the console deadline applies and the token shows `expiration_period: null` (`createTransactionToken.25`); the SDK reads such konbini and bank tokens, with `expirationPeriod` missing (SDK, tested). It reads back as hours, e.g. `P3D` → `PT72H` (`createTransactionToken.29`). A konbini `expiration_time_shift` is a time with zone such as `23:59:00+09:00`, and needs a period of one day or more (`createTransactionToken.26`, `createTransactionToken.27`). 7-Eleven, Seicomart and Pay-easy ignore the time of day, also in `capture_at`: count their deadline as the end of that day yourself (`createTransactionToken.28`).
    - **Payment for an event** (a class, a booking): the deadline must fall before the event. Set it from the event date: `expiration_period` here, or `capture_at` on the charge (step 4). Don't leave it to the console setting. With 7-Eleven, Seicomart or Pay-easy, an event on the deadline day needs the day before (end of day, `createTransactionToken.28`).
 
-4. **Create the charge** with `client.charges.createCharge({ idempotencyKey: idempotencyKey("charge", order.id, attempt, order.amount), body })`:
+4. **Create the charge** with `(await client.charges.createCharge(idempotencyKey("charge", order.id, attempt, order.amount), body)).result`:
    ```ts
    { transactionTokenId, amount: order.amount, currency: "JPY",
      metadata: { orderId: order.id },
-     captureAt: deadline,                                               // konbini and bank: the exact deadline
+     captureAt: deadline.toISOString(),                                 // konbini and bank: the exact deadline, as text
      redirect: { endpoint: "https://shop.example/paypay/return" } }        // PayPay only
    ```
    - **No `capture` field** for these methods, not even `true` (`createCharge.20`).
-   - `capture_at` (UTC) becomes the payment deadline, wins over the token's period, and comes back as `captureAt` for you to show (`createCharge.24`). At most 60 days ahead (`createCharge.100`). Example: 23:59 JST three days ahead, or before the event (step 3).
+   - `capture_at` (UTC) becomes the payment deadline, wins over the token's period, and comes back as `captureAt` for you to show (`createCharge.24`). In SDK 1.2.3 `captureAt` is text, both ways, as the API wrote it (e.g. without milliseconds): compare deadlines with `Date.parse`, not as strings (SDK, tested). At most 60 days ahead (`createCharge.100`). Example: 23:59 JST three days ahead, or before the event (step 3).
    - `redirect.endpoint` is for PayPay (and Alipay) online charges (`createCharge.54`).
-   - The same key on a double submit returns the same charge: no second slip, account or PayPay charge (`every-request.21`). Also reuse a still-waiting attempt instead of starting a new one.
+   - The same key on a repeated request returns the same charge: no second slip, account or PayPay charge (`every-request.21`). The keys come from the attempt number, so decide that number from an attempt you store and claim **before** the first call (token or charge), with no `await` between reading the last attempt and claiming the next one. A request that arrives while that attempt is being created, or while its charge is `pending` or `awaiting`, gets the same attempt and the same keys; start a new attempt only after the last one ended `failed` (an expired konbini or bank charge is `failed`, `background.51`) or `canceled`. A different method while one is open: cancel the open charge first (step 10) (app rule).
 
 5. **Wait until the charge is `awaiting`.** It starts `pending` (`createCharge.26`). Call `settleCharge(client, storeId, chargeId)`; `polling=true` returns on the first change (`getCharge.2`). `awaiting` means "waiting for the customer to pay" and can last days (`createCharge.31`). `failed` here means the application failed; in test mode a konbini phone number ending in 1111 makes this happen (`createCharge.34`).
 
 6. **Show the customer how to pay** (a common mistake is to show nothing):
-   - **Konbini:** the payment number and the slip URL from the charge's metadata, once it is `awaiting` (`createCharge.83`). In the SDK they are under `charge.metadata.additionalProperties`: `internal_convenience_payment_number` and `internal_convenience_payment_url` (SDK, tested). Show the deadline from `captureAt`. For Pay-easy, also show the institution number 58091, which is not in the charge (`createCharge.84`).
-   - **Bank transfer:** once the charge is `awaiting`, read the account from `client.transactionTokens.getTransactionToken({ storeId, id: tokenId })`: `data.bankName`, `branchName`, `branchCode`, `accountNumber`, `accountHolderName` (`getTransactionToken.3`). `client.charges.getChargeIssuerToken` gives the same account (`getChargeIssuerToken.6`), but in test mode fetching it completes the charge (`getChargeIssuerToken.5`), so read the token if your test charges must stay waiting. Show the deadline from `captureAt`.
+   - **Konbini:** the payment number and the slip URL from the charge's metadata, once it is `awaiting` (`createCharge.83`). In the SDK they are under `charge.metadata.additionalProperties`: `internal_convenience_payment_number` and `internal_convenience_payment_url` (SDK 1.2.3 bug S4) (SDK, tested). Show the deadline from `captureAt`. For Pay-easy, also show the institution number 58091, which is not in the charge (`createCharge.84`).
+   - **Bank transfer:** once the charge is `awaiting`, read the account from `(await client.transactionTokens.getTransactionToken(storeId, tokenId)).result`: `data.bankName`, `branchName`, `branchCode`, `accountNumber`, `accountHolderName` (`getTransactionToken.3`); cast `data` to `TokenResponseBankTransferData` after checking `paymentType === "bank_transfer"`, as the SDK's token type doesn't narrow by itself (SDK, tested). `client.charges.getChargeIssuerToken` gives the same account (`getChargeIssuerToken.6`), but in test mode fetching it completes the charge (`getChargeIssuerToken.5`), so read the token if your test charges must stay waiting. Show the deadline from `captureAt`.
    - **PayPay:** show a "Pay with PayPay" link to your hand-off route (step 7).
 
-7. **PayPay hand-off** (when the customer clicks): GET the charge; continue only while it is `awaiting` (`getChargeIssuerToken.1`, `getChargeIssuerToken.2`). Call `client.charges.getChargeIssuerToken({ storeId, id })` (not the 3-D Secure one) and follow `callMethod`:
+7. **PayPay hand-off** (when the customer clicks): GET the charge; continue only while it is `awaiting` (`getChargeIssuerToken.1`, `getChargeIssuerToken.2`). Call `(await client.charges.getChargeIssuerToken(storeId, chargeId)).result` (not the 3-D Secure one) and follow `callMethod`:
    - `http_get`: redirect the browser to `issuerToken`.
    - `http_post`: send `threeDsHandOffPage({ method: "POST", url: issuerToken, contentType: "application/x-www-form-urlencoded", fields: payloadToWireFields(payload) })`, an auto-submitting form.
    - **Test mode:** the issuer token is the dummy string `test-issuer-token`, not a URL, with `call_method: http_get` (`getChargeIssuerToken.3`). Don't treat it as an error: show a test-mode page with a link to your return page instead. Fetching the issuer token already completes the test charge (`getChargeIssuerToken.4`).
@@ -58,20 +58,21 @@ Use this when you build your own payment screens and call the API from your serv
    - `failed` → the attempt ended: konbini deadline passed (`background.51`), bank deadline passed (`background.54`), or PayPay not finished in time (`background.49`). Paying again needs a **new token and a new charge** (attempt + 1).
    - Also run a catch-up job that re-reads every waiting attempt by GET on a timer, because webhooks are best effort (`background.19`).
 
-10. **The customer withdraws.** Cancel the waiting charge with `client.cancels.createCancel` and settle it with `settleCharge`: konbini (`createCancel.4`), bank transfer and PayPay (`createCancel.16`). A waiting Pay-easy charge can't be cancelled (`createCancel.15`): don't offer that cancel. A bank charge that already received money can't be canceled (`createCancel.11`). Paid charges need a refund (`refunds.md`); bank transfer has no refund (`createRefund.2`).
+10. **The customer withdraws.** Cancel the waiting charge with `client.cancels.createCancel(storeId, chargeId, key, {})` and settle it with `settleCharge`: konbini (`createCancel.4`), bank transfer and PayPay (`createCancel.16`). A waiting Pay-easy charge can't be cancelled (`createCancel.15`): don't offer that cancel. A bank charge that already received money can't be canceled (`createCancel.11`). Paid charges need a refund (`refunds.md`); bank transfer has no refund (`createRefund.2`).
 
 ## Traps
 
 - **Showing the konbini or bank customer nothing** (a common mistake): read the number, slip URL and account after `awaiting` (step 6).
 - **Reading details from the create response.** It is still `pending` and has no payment number (`getCharge.2`, `createCharge.83`, `getTransactionToken.3`).
-- **Looking for `metadata.internal_convenience_payment_number` at the top level** of the SDK's `metadata`: the SDK puts undeclared keys under `metadata.additionalProperties` (SDK, tested).
+- **Looking for `metadata.internal_convenience_payment_number` at the top level** of the SDK's `metadata`: the SDK puts undeclared keys under `metadata.additionalProperties` (SDK 1.2.3 bug S4) (SDK, tested).
 - **Sending `capture`** on these charges → 400 `CAPTURE_ONLY_FOR_CARD_PAYMENT` (`createCharge.20`).
 - **Marking the order paid on `awaiting`, on `charge_updated`, or on the PayPay return redirect** (`createCharge.31`, `createCharge.54`, `background.19`).
 - **Wrong issuer-token endpoint:** konbini has no issuer token, and card 3-D Secure uses its own endpoint (`getChargeIssuerToken.7`). Fetching it after the charge is `successful` is refused with `INVALID_CHARGE_STATUS` (`getChargeIssuerToken.1`).
 - **Redirecting to the test-mode dummy issuer token, or failing on it** (`getChargeIssuerToken.3`). Show the test-mode page (step 7).
 - **Reusing a token after a failed or expired attempt.** Make a new token and charge (`background.51`, `background.54`, `background.49`).
 - **Not checking bank amounts** (`background.52`, `background.53`).
-- **No Idempotency-Key:** a double submit makes two konbini slips or two bank accounts (`every-request.21`).
+- **Deciding "reuse or new attempt" from the order state after the charge settles,** or storing the attempt only after the charge call. A second click in that gap starts attempt 2 with new keys, and the customer gets two PayPay charges, slips or accounts. Claim the attempt before the first call and reuse it while it is open (step 4) (app rule).
+- **No Idempotency-Key of your own:** the SDK then sends a new random key each time (SDK 1.2.3 bug M5), so a double submit makes two konbini slips or two bank accounts (`every-request.21`).
 - **`expiration_time_shift` as `PT23H59M`** → 400 (`createTransactionToken.26`); with a period under one day → 400 (`createTransactionToken.27`).
 - **A konbini deadline after the event** the customer booked, or a time of day trusted for 7-Eleven, Seicomart or Pay-easy (`createTransactionToken.28`).
 - **Webhook receiver mistakes** (`Bearer`, slow replies, no de-duplication): `shared/webhooks.md` traps.
@@ -84,6 +85,7 @@ Unit tests (no network):
 - The deadline is 23:59 JST N days ahead, sent in UTC.
 - The konbini number is read from `metadata.additionalProperties`.
 - Order state: paid only on `successful`; bank overpayment flagged; `failed` ends the attempt; `error` leaves the order for a re-check.
+- Double submit: two pay requests at the same moment, and a second one while the charge is still `pending`, make one token and one charge and get the same attempt; after a `failed` attempt the next one has new keys.
 - PayPay hand-off: `http_get` redirects; `http_post` auto-submits the payload; a non-`https` issuer token is never redirected to, and in test mode shows the test-mode page.
 
 Test-mode run (webhook through a tunnel):
@@ -94,6 +96,7 @@ Test-mode run (webhook through a tunnel):
 - PayPay: `awaiting`, `redirect.endpoint` set, the hand-off shows the test page (dummy issuer token), the charge turns `successful` within seconds (`getChargeIssuerToken.4`), the return page re-reads it and marks the order paid; a return for a charge that isn't yours gets 404.
 - A re-sent `charge_finished` is not processed twice; the catch-up job re-reads waiting orders.
 - Withdrawing a konbini payment cancels the charge.
+- Two PayPay pay requests for one order at the same moment → one charge for the order.
 
 ## What test mode can't show
 

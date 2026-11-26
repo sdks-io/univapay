@@ -23,14 +23,14 @@ Use `payment-links.md` when you send a link instead, `konbini-bank-paypay-api.md
    - `data-auto-submit="true"`: when the customer closes the widget, it submits the form by GET with `univapayChargeId` added (docs: guide/implement/widget/param-basic).
 
    Because the browser makes the charge, someone can edit the amount in the page. Steps 4–5 catch that.
-   *The other way:* `data-checkout="token"` plus a server `charges.createCharge` with the order's amount. The server must then charge within 5 minutes (`createCharge.56`) and run 3-D Secure itself (`three-ds-server-charges.md`). That path is not covered here.
+   *The other way:* `data-checkout="token"` plus a server `client.charges.createCharge(idempotencyKey, body)` with the order's amount. The server must then charge within 5 minutes (`createCharge.56`) and run 3-D Secure itself (`three-ds-server-charges.md`). That path is not covered here.
 
    **Konbini for an event** (a class, a booking): the payment deadline must fall before the event. The console's deadline and the widget's `data-expiration-period` (docs: guide/implement/widget/param-basic) are not a substitute: a period counts from when the token is made (`createTransactionToken.25`), not back from the event. Take that payment with a server charge whose `capture_at` is before the event (`createCharge.24`, `createCharge.100`): `konbini-bank-paypay-api.md` steps 3–4. For 7-Eleven, Seicomart and Pay-easy, count the deadline as the end of that day (`createTransactionToken.28`).
 
 3. **Receive webhooks** with the receiver from `shared/webhooks.md`. In `handle`, for `charge_*` events, find the order by `data.metadata.order_id`, ignore unknown orders, then go to step 4.
 
-4. **Decide from a GET, in one function.** Read the charge with `client.charges.getCharge({ storeId, id, polling: true })` (`getCharge.1`, `getCharge.2`) and `checkLinkPayment(client, storeId, chargeId, { amount, currency })`. Then, in this order:
-   1. `charge.metadata?.orderId` must equal the order id (the SDK name for `order_id`). Otherwise, ignore the charge.
+4. **Decide from a GET, in one function.** Read the charge with `(await client.charges.getCharge(storeId, chargeId, true)).result` (`getCharge.1`, `getCharge.2`) and `checkLinkPayment(client, storeId, chargeId, { amount, currency })`. Then, in this order:
+   1. `charge.metadata?.orderId` must equal the order id (the SDK name for `order_id`) (SDK, tested). Otherwise, ignore the charge.
    2. One order, one charge. A second paid charge for the same order is a double payment for staff to refund. After a `failed` attempt, a new charge may replace the old one.
    3. `check.matchesOrder` must be true: same amount and currency. If not, set the order to "needs attention", never "paid".
    4. Map `check.outcome` (`chargeOutcome`):
@@ -47,12 +47,12 @@ Use `payment-links.md` when you send a link instead, `konbini-bank-paypay-api.md
    - If the GET returns 502/503/504, retry it (`getCharge.3`).
 
 6. **Konbini: show the payment details yourself.** The widget's own konbini screen shows no payment number (`getCharge.13`).
-   - When a konbini charge is `awaiting`, read the payment number and the slip URL from the charge metadata (`createCharge.83`). In the SDK they are `charge.metadata.additionalProperties["internal_convenience_payment_number"]` and `["internal_convenience_payment_url"]`: the SDK declares only a few metadata keys and puts the rest under `additionalProperties` (SDK, tested).
+   - When a konbini charge is `awaiting`, read the payment number and the slip URL from the charge metadata (`createCharge.83`). In the SDK they are `charge.metadata.additionalProperties["internal_convenience_payment_number"]` and `["internal_convenience_payment_url"]`: the SDK declares only a few metadata keys and puts the rest under `additionalProperties` (SDK 1.2.3 bug S4) (SDK, tested).
    - Show them on the order page. For Pay-easy, also show the collecting institution number 58091 (`createCharge.84`).
    - UnivaPay may also email the details (`createCharge.18`), but don't rely on the email.
    - When the customer pays, `charge_finished` arrives (`background.48`). If they never pay, the charge becomes `failed` at the deadline (`background.51`).
 
-7. **Catch up on missed webhooks** as in `shared/webhooks.md` step 10 (`processPending`, `chargesCreatedSince`, GET each charge), and re-enable a stopped webhook with `ensureWebhookActive(client, storeId, id, { expectedUrl })`.
+7. **Catch up on missed webhooks** as in `shared/webhooks.md` step 10 (`processPending`, `chargesCreatedSince`, GET each charge), and re-enable a stopped webhook with `ensureWebhookActive(auth, storeId, id, { expectedUrl })`.
 
 8. **Tell the customer the truth.**
    - "Paid" only after step 4 says paid.

@@ -11,7 +11,10 @@
 // - `polling=true` makes UnivaPay hold the GET until the status changes or about 3 s pass (getCharge.1, getCharge.2,
 //   getCharge.5); loop a bounded number of times instead of sleeping.
 // - A new subscription is `unverified` until its first charge completes (createSubscription.41).
-import type { UnivapayPublicApiClient } from "univapay-public-api";
+// - SDK notes (SDK, tested: test/payment-status.test.ts): every call returns an `ApiResponse`; the object is in `.result`.
+//   (SDK 1.2.3 bug N1) A reply with a value outside the SDK's closed lists (e.g. a `bimonthly` subscription) throws
+//   ResponseValidationError instead of returning: catch it with `readUnivapayError` (kind "succeeded-unreadable").
+import type { Client } from "univapay-client-sdk";
 
 export type ChargeOutcome = "paid" | "held" | "waiting-for-customer" | "processing" | "failed" | "canceled" | "needs-attention";
 export type RefundOutcome = "refunded" | "processing" | "failed" | "needs-attention";
@@ -54,33 +57,33 @@ export function subscriptionOutcome(status: string | undefined): SubscriptionOut
 export type WaitOptions = { maxPolls?: number };
 
 /** Re-read a charge with server-side polling until it leaves `pending` (at most `maxPolls` reads, default 5 ≈ 15 s). */
-export async function settleCharge(client: UnivapayPublicApiClient, storeId: string, chargeId: string, opts: WaitOptions = {}) {
-  let charge = await client.charges.getCharge({ storeId, id: chargeId, polling: true });
+export async function settleCharge(client: Client, storeId: string, chargeId: string, opts: WaitOptions = {}) {
+  let charge = (await client.charges.getCharge(storeId, chargeId, true)).result;
   for (let i = 1; i < (opts.maxPolls ?? 5) && chargeOutcome(charge.status) === "processing"; i++)
-    charge = await client.charges.getCharge({ storeId, id: chargeId, polling: true });
+    charge = (await client.charges.getCharge(storeId, chargeId, true)).result;
   return { charge, outcome: chargeOutcome(charge.status) };
 }
 
 /** Re-read a refund until it leaves `pending` (bounded). */
-export async function settleRefund(client: UnivapayPublicApiClient, storeId: string, chargeId: string, refundId: string, opts: WaitOptions = {}) {
-  let refund = await client.refunds.getRefund({ storeId, chargeId, id: refundId, polling: true });
+export async function settleRefund(client: Client, storeId: string, chargeId: string, refundId: string, opts: WaitOptions = {}) {
+  let refund = (await client.refunds.getRefund(storeId, chargeId, refundId, true)).result;
   for (let i = 1; i < (opts.maxPolls ?? 5) && refundOutcome(refund.status) === "processing"; i++)
-    refund = await client.refunds.getRefund({ storeId, chargeId, id: refundId, polling: true });
+    refund = (await client.refunds.getRefund(storeId, chargeId, refundId, true)).result;
   return { refund, outcome: refundOutcome(refund.status) };
 }
 
 /** Re-read a cancel until it leaves `pending` (bounded). */
-export async function settleCancel(client: UnivapayPublicApiClient, storeId: string, chargeId: string, cancelId: string, opts: WaitOptions = {}) {
-  let cancel = await client.cancels.getCancel({ storeId, chargeId, id: cancelId, polling: true });
+export async function settleCancel(client: Client, storeId: string, chargeId: string, cancelId: string, opts: WaitOptions = {}) {
+  let cancel = (await client.cancels.getCancel(storeId, chargeId, cancelId, true)).result;
   for (let i = 1; i < (opts.maxPolls ?? 5) && cancelOutcome(cancel.status) === "processing"; i++)
-    cancel = await client.cancels.getCancel({ storeId, chargeId, id: cancelId, polling: true });
+    cancel = (await client.cancels.getCancel(storeId, chargeId, cancelId, true)).result;
   return { cancel, outcome: cancelOutcome(cancel.status) };
 }
 
 /** Re-read a subscription until it leaves `unverified` (bounded). */
-export async function settleSubscription(client: UnivapayPublicApiClient, storeId: string, subscriptionId: string, opts: WaitOptions = {}) {
-  let sub = await client.subscriptions.getSubscription({ storeId, id: subscriptionId, polling: true });
+export async function settleSubscription(client: Client, storeId: string, subscriptionId: string, opts: WaitOptions = {}) {
+  let sub = (await client.subscriptions.getSubscription(storeId, subscriptionId, true)).result;
   for (let i = 1; i < (opts.maxPolls ?? 5) && subscriptionOutcome(sub.status) === "starting"; i++)
-    sub = await client.subscriptions.getSubscription({ storeId, id: subscriptionId, polling: true });
+    sub = (await client.subscriptions.getSubscription(storeId, subscriptionId, true)).result;
   return { subscription: sub, outcome: subscriptionOutcome(sub.status) };
 }

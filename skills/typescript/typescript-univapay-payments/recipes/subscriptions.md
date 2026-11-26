@@ -17,29 +17,30 @@ Use this when UnivaPay charges the customer's card on a schedule by itself. If y
    - **"Pay ¥X in N payments":** `fixedCountPlan(total, N, period)` from `subscription-plan.ts`. It sends the **total** as `amount` with `subscription_plan: { plan_type: "fixed_cycles", fixed_cycles: N }` (`createSubscription.24` (amount is the total, divided by N)). The first charge is payment 1 of N (`background.61`). N must be 2 or more (`simulateSubscriptionPlan.3`).
    - **"Pay ¥T, ¥P each time":** `fixedAmountPlan(total, perPayment, period)`. `amount` is the total and `fixed_cycle_amount` is each payment, lower than the total (`createSubscription.23`).
    - Never use `installment_plan` for "pay in 3": it is card-company installments, a different product (`createSubscription.22`).
-   - **Period:** send exactly one of `period` (`daily`, `weekly`, `biweekly`, `monthly`, `bimonthly`, `quarterly`, `semiannually`, `annually`) or `cyclical_period` (`createSubscription.10`, `createSubscription.50`). `bimonthly` works although the definition leaves it out (`createSubscription.42`). A `cyclical_period` must be at least one day (`createSubscription.11`).
+   - **Period:** send exactly one of `period` (`daily`, `weekly`, `biweekly`, `monthly`, `bimonthly`, `quarterly`, `semiannually`, `annually`) or `cyclical_period` (`createSubscription.10`, `createSubscription.50`). `bimonthly` works in the API although the definition leaves it out (`createSubscription.42`). A `cyclical_period` must be at least one day (`createSubscription.11`).
+   - **Don't use `bimonthly` with SDK 1.2.3 (SDK 1.2.3 bug N1):** the SDK refuses to send it, and one `bimonthly` subscription in the store makes `getSubscription` fail for it and `listStoreSubscriptions` fail for its whole page. The template's `Period` type leaves it out (SDK, tested). For other stores' data, list with `storeSubscriptions` (`subscription-plan.ts`), which reads such a page from the raw reply.
 
-2. **Preview the schedule before you create anything.** Call `previewPlan(client, storeId, fields)` (it calls `client.subscriptions.simulateStoreSubscriptionPlan`). Nothing is created (`simulateSubscriptionPlan.1`). Compare the returned amounts with what your catalogue says each payment is; if they differ, don't create the subscription: log it and show an error. When the total doesn't divide evenly, the preview shows which payment takes the remainder, e.g. ¥1,000 in 3 → 333, 333, 334 (`createSubscription.24`).
+2. **Preview the schedule before you create anything.** Call `previewPlan(client, storeId, fields)` (it calls `client.subscriptions.simulateStoreSubscriptionPlan`, converting to the simulate enum types). Nothing is created (`simulateSubscriptionPlan.1`). Compare the returned amounts with what your catalogue says each payment is; if they differ, don't create the subscription: log it and show an error. When the total doesn't divide evenly, the preview shows which payment takes the remainder, e.g. ¥1,000 in 3 → 333, 333, 334 (`createSubscription.24`).
 
-3. **Check the token on the server.** Call `client.transactionTokens.getTransactionToken({ storeId, id })` and require `type` `subscription` or `recurring`, `paymentType` `card`, and `active` not false (`createSubscription.9` (one-time tokens are refused)). For a saved card, look the token up from the signed-in customer's own record, never from the request. Create the subscription within 5 minutes of making a `subscription` token (`createSubscription.40`).
+3. **Check the token on the server.** Call `(await client.transactionTokens.getTransactionToken(storeId, tokenId)).result` and require `type` `subscription` or `recurring`, `paymentType` `card`, and `active` not false (`createSubscription.9` (one-time tokens are refused)). For a saved card, look the token up from the signed-in customer's own record, never from the request. Create the subscription within 5 minutes of making a `subscription` token (`createSubscription.40`).
 
 4. **Create the subscription with one key per signup.**
    ```ts
    const key = idempotencyKey("subscription", customer.id, signupId, planId);
-   const r = await withIdempotentRetry(key, (k) => client.subscriptions.createSubscription({ idempotencyKey: k, body: {
-     transactionTokenId, currency: "JPY", ...planFields,          // fixedCountPlan / fixedAmountPlan / { amount, period }
-     threeDs: { mode: "normal", redirectEndpoint: returnUrl },    // always explicit
+   const r = await withIdempotentRetry(key, async (k) => (await client.subscriptions.createSubscription(k, {
+     transactionTokenId, currency: "JPY", ...planFields,          // fixedCountPlan / fixedAmountPlan / { amount, period: SubscriptionPeriod.Monthly }
+     threeDs: { mode: ChargeCreateRequestThreeDsMode.Normal, redirectEndpoint: returnUrl },  // always explicit
      scheduleSettings: { zoneId: "Asia/Tokyo" },
      metadata: { orderId: signupId, additionalProperties: { customerId: customer.id } },
-   } }));
+   })).result);
    ```
-   - The same key on a retry or a double submit returns the first subscription instead of making a second one (`every-request.21`).
+   - The same key on a retry or a double submit returns the first subscription instead of making a second one (`every-request.21`). Also claim the signup in your app before the first call, so a second submit while the first is still running waits for it instead of sending its own (app rule). Without your own key the SDK sends a new random one each time (SDK 1.2.3 bug M5).
    - Send `three_ds.mode` every time: the sources disagree on the default (`createSubscription.28`). Use `skip` only from the server and only if support enabled it (`createSubscription.32`, `createSubscription.33`).
    - Two subscriptions on the same card within 30 seconds are refused with `CHARGE_TOO_QUICK` (`createSubscription.25`). Show "please try again in a minute"; don't retry in a loop.
    - Set `zone_id`; scheduled charges run from 07:00 in that zone (`createSubscription.44`).
-   - Put your own reference in `metadata`; it is copied to every charge the subscription makes (`background.57`). In the SDK, `metadata.orderId` goes out as `order_id`; any other key goes under `metadata.additionalProperties`, is sent at the top level, and comes back under `additionalProperties` (SDK, tested).
+   - Put your own reference in `metadata`; it is copied to every charge the subscription makes (`background.57`). In the SDK, `metadata.orderId` goes out as `order_id` and must be text (SDK 1.2.3 bug H1); keep other values to text, numbers or booleans: on charges and tokens UnivaPay refuses an object value and splits an array into `name[0]`, `name[1]` keys (`updateCharge.6`, `updateCharge.7`), and SDK 1.2.3 drops an object value before sending, without an error (SDK, tested); any other key goes under `metadata.additionalProperties`, is sent at the top level, and comes back under `additionalProperties` (SDK, tested).
 
-5. **Wait for the first charge before you give access.** A new subscription is `unverified` (`createSubscription.41`). Call `settleSubscription(client, storeId, id)` from `payment-status.ts` (bounded re-reads with `polling=true`, `getSubscription.1`). Then read the first charge with `client.subscriptions.getSubscriptionLatestCharge({ storeId, subscriptionId })`; a 404 with no body means no charge yet (`getSubscriptionLatestCharge.1`).
+5. **Wait for the first charge before you give access.** A new subscription is `unverified` (`createSubscription.41`). Call `settleSubscription(client, storeId, id)` from `payment-status.ts` (bounded re-reads with `polling=true`, `getSubscription.1`). Then read the first charge with `(await client.subscriptions.getSubscriptionLatestCharge(storeId, subscriptionId)).result`; a 404 with no body means no charge yet (`getSubscriptionLatestCharge.1`).
    - `current`: give access.
    - First charge `awaiting`: the bank wants 3-D Secure. Hand the customer off as in `three-ds-server-charges.md` (`createSubscription.39`). The subscription stays `unverified` meanwhile.
    - **The 3-D Secure return for a subscription carries `univapaySubscriptionId`, not `univapayChargeId`** (`createSubscription.38`). Your return route reads `univapaySubscriptionId`, ignores ids you didn't create (show nothing), re-reads the subscription with `settleSubscription`, and decides from that GET.
@@ -57,9 +58,9 @@ Use this when UnivaPay charges the customer's card on a schedule by itself. If y
    - `unpaid` after a resume → no access until `subscription_payment` arrives (`unsuspendSubscription.2`). So `unpaid` keeps access only for a customer who already had it; it never grants it.
    - `suspended` or `canceled` → end access (`background.63`, `background.27`, `background.26`). `unconfirmed` → no access.
 
-8. **Pause.** Only from `current` or `unpaid` (`suspendSubscription.2`): check your stored status first, then call `pauseSubscription`. It returns `suspended` at once (`suspendSubscription.3`). With `termination_mode: on_next_payment`, the pause happens only on the next payment date (`suspendSubscription.4`).
+8. **Pause.** Only from `current` or `unpaid` (`suspendSubscription.2`): check your stored status first, then call `pauseSubscription(client, storeId, id, idempotencyKey("update", id, "suspend", requestId))`. It returns `suspended` at once (`suspendSubscription.3`). With `termination_mode: on_next_payment`, the pause happens only on the next payment date (`suspendSubscription.4`).
 
-9. **Resume.** Only from `suspended` (`unsuspendSubscription.1`): call `resumeSubscription`. It comes back `unpaid`, not `current` (`unsuspendSubscription.2`). Store that status from the response: no webhook follows (`unsuspendSubscription.3`). Show the next charge date from `nextPayment.dueDate` (`unsuspendSubscription.4`, `unsuspendSubscription.7`). For a fixed-count plan, missed payments move to the end of the schedule (`unsuspendSubscription.6`).
+9. **Resume.** Only from `suspended` (`unsuspendSubscription.1`): call `resumeSubscription(client, storeId, id, idempotencyKey("update", id, "resume", requestId))`. It comes back `unpaid`, not `current` (`unsuspendSubscription.2`). Store that status from the response: no webhook follows (`unsuspendSubscription.3`). Show the next charge date from `nextPayment.dueDate` (`unsuspendSubscription.4`, `unsuspendSubscription.7`). For a fixed-count plan, missed payments move to the end of the schedule (`unsuspendSubscription.6`).
 
 10. **Cancel.** Call `cancelSubscriptionSafely`. Success is 204 with no body; the subscription is canceled for good (`cancelSubscription.1`, `updateSubscription.4`). While the first charge is still `awaiting` (3-D Secure or an unpaid konbini first charge), cancel returns 403 with an empty body (`cancelSubscription.3`): the template turns that into `first-payment-still-pending`; tell the customer to try again later. To stop at the next payment date instead, set `next_payment.terminate_with_status` (`updateSubscription.11`).
 
@@ -77,8 +78,9 @@ Use this when UnivaPay charges the customer's card on a schedule by itself. If y
 - **Trusting the status inside a webhook.** Events can arrive after later changes (`background.19`, `background.75`). Always re-read.
 - **Parsing a body from cancel's 204, or crashing on its empty 403** (`cancelSubscription.1`, `cancelSubscription.3`).
 - **Treating `completed` as a failure** (`background.73`).
-- **No Idempotency-Key.** When you pass none, the SDK sends no key (SDK, tested), so a retry creates a second subscription and a second charge (`every-request.21`; see `idempotency.ts`).
+- **No Idempotency-Key of your own.** When you pass none, the SDK sends a new random key on every call (SDK 1.2.3 bug M5), so a retry creates a second subscription and a second charge (`every-request.21`; see `idempotency.ts`).
 - **Patching the amount of a fixed plan** (`updateSubscription.7`).
+- **`period: bimonthly`** with SDK 1.2.3 (SDK 1.2.3 bug N1, step 1).
 - **Webhook receiver mistakes** (`Bearer`, slow replies): `shared/webhooks.md` traps.
 
 ## Test checklist
@@ -87,7 +89,7 @@ Unit tests (no network):
 - The plan builders send the total as `amount` (`7530` for 3 × 2,510), and `fixed_cycle_amount` for fixed-amount plans.
 - `/subscribe` never calls create for a one-time or non-card token.
 - `/subscribe` refuses to create when the simulated schedule doesn't match the catalogue.
-- A double submit sends the same Idempotency-Key; the amount sent ignores any amount from the browser; `three_ds.mode` is always present.
+- A double submit sends the same Idempotency-Key, and two submits at the same moment make one createSubscription call; the amount sent ignores any amount from the browser; `three_ds.mode` is always present.
 - Access: `unpaid` keeps access for a customer who had it; `unpaid` after a resume grants none; `suspended`, `canceled` and `unconfirmed` end it; `current` and `completed` give it.
 - Cancel: 204 → canceled; 403 with no body → "first payment still pending".
 

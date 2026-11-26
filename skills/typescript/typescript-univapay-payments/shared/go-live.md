@@ -16,7 +16,7 @@ Use this when an app that works in test mode is about to take real payments. It 
   - The browser and the server may use different app tokens of the same store: one with your site's domains for the widget, one with its secret for the server (`every-request.33`).
   - Calls with the app token alone are accepted only from UnivaPay's own widget and link-form pages. From any other origin they get 403 with an empty body, even an origin listed in the token's `domains`; with no origin they get 401 `INVALID_DOMAIN` (`getCheckoutInfo.5`, `getCheckoutInfo.1`, `every-request.2`). So your own pages never call the API with the app token: the widget makes its calls from its own frame, and your server uses `{secret}.{jwt}`.
 - **Check the mode and the domains at startup**, so a wrong key fails at deploy and not at checkout:
-  - `client.checkout.getCheckoutInfo()` with the server client returns `mode`; it must equal your config's mode (`getCheckoutInfo.2`).
+  - `(await client.checkout.getCheckoutInfo()).result.mode` with the server client; it must equal your config's mode (`getCheckoutInfo.2`).
   - Decode the browser app token's payload and check that your site's host is in its `domains` (`createTransactionToken.51`).
 - **Base URL:** `https://api.univapay.com` in both modes (`every-request.9`).
 
@@ -60,7 +60,8 @@ Plan a check for each in live mode, or cover it with unit tests:
 - [ ] Live webhook created with a new auth token; its id and token are in config; triggers cover every recipe you use.
 - [ ] Receiver: raw `Authorization` compare, 200 within 3 s, store-then-process, duplicates skipped, GET before acting, unknown and other-mode events ignored (`webhooks.md`).
 - [ ] Monitoring: webhook `active` check, reply-time and failure logs, `processPending` timer, catch-up runbook known.
-- [ ] Every create call passes an `idempotencyKey` (`templates/idempotency.ts`).
+- [ ] Every write passes your own `idempotencyKey` (`templates/idempotency.ts`; SDK 1.2.3 bug M5).
+- [ ] `univapay-client-sdk` pinned to exactly 1.2.3 with a lockfile; the app starts the way it was tested (`tsx` or CommonJS `require`: SDK 1.2.3 bug N2); request and response body logging off (SDK 1.2.3 bug M10).
 - [ ] Amounts come from the server's order; only the signed-in customer's own saved card is charged.
 - [ ] Fixed-count plans built with `fixedCountPlan` and checked with `previewPlan`.
 - [ ] Konbini, bank and PayPay customers see how to pay (number, slip, account, deadline).

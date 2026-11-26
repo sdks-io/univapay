@@ -15,11 +15,11 @@ Use this when the money should be held at checkout and taken later: at shipping,
 
 1. **Price the order on the server.** The browser sends items, never an amount. Hold only the signed-in customer's own card: a token from this checkout, or their own saved card looked up on the server (`saved-cards.md`).
 
-2. **Create the hold.** `client.charges.createCharge({ idempotencyKey: idempotencyKey("charge", order.id, order.amount), body: { transactionTokenId, amount, currency: "JPY", capture: false, metadata: { orderId } } })`.
+2. **Create the hold.** `client.charges.createCharge(idempotencyKey("charge", order.id, order.amount), { transactionTokenId, amount, currency: "JPY", capture: false, metadata: { orderId } })`.
    - Send `capture: false` every time. Left out, the charge is captured at once (`createCharge.22`).
    - A `one_time` token charges only once (`createCharge.57`). If you may need to hold again later (step 6), hold a saved `recurring` token.
-   - 3-D Secure applies as for any card charge. A saved card whose 3-D Secure is not done waits for the customer (`createCharge.42`); follow `three-ds-server-charges.md`. Send `threeDs: { mode: "skip" }` only if UnivaPay enabled it for you (`createCharge.43`).
-   - The key makes a double click on "pay" the same request (`every-request.20`, `every-request.21`).
+   - 3-D Secure applies as for any card charge. A saved card whose 3-D Secure is not done waits for the customer (`createCharge.42`); follow `three-ds-server-charges.md`. Send `threeDs: { mode: ChargeCreateRequestThreeDsMode.Skip }` only if UnivaPay enabled it for you (`createCharge.43`).
+   - The key makes a double click on "pay" the same request (`every-request.20`, `every-request.21`). Without your own key, the SDK sends a new random one each time, so a double click is two holds (SDK 1.2.3 bug M5).
 
 3. **Wait for the result; held is not paid.** The create reply is `pending` (`createCharge.26`, `createCharge.27`). Call `settleCharge(client, storeId, chargeId)` and map with `chargeOutcome()`:
    - `held` (status `authorized`) → order "held": the money is reserved, NOT paid (`createCharge.21`). Store `authorized_amount = charge.requestedAmount` and `held_at`. Don't send "payment received" yet.
@@ -29,8 +29,8 @@ Use this when the money should be held at checkout and taken later: at shipping,
 4. **Capture at shipping.** Compute the amount on the server from the shipped lines.
    - Re-read the charge first: capture only when `status === "authorized"` (`captureCharge.12`). `successful` → "already captured" (`captureCharge.10`); `canceled` → "hold released, take a new payment" (`captureCharge.11`).
    - Refuse more than the hold yourself (`captureCharge.6`, capture above the hold).
-   - Full: `client.charges.captureCharge({ storeId, id })` with no body captures the whole hold (`captureCharge.8`). Partial: `body: { amount, currency: charge.requestedCurrency }`; another currency is refused (`captureCharge.7`).
-   - The reply is 200 with no body; the SDK returns `undefined` (`captureCharge.2`). Don't read a result from it.
+   - Full: `client.charges.captureCharge(storeId, chargeId, key)` with no body captures the whole hold (`captureCharge.8`). Partial: `captureCharge(storeId, chargeId, key, { amount, currency: charge.requestedCurrency })`; another currency is refused (`captureCharge.7`).
+   - The reply is 200 with no body (`captureCharge.2`); the SDK's `result` is `undefined` (SDK, tested). Don't read a result from it.
    - Set the order to "capturing", then `settleCharge`. Only `successful` is paid; `authorized` after a capture means "still capturing", not "held" (`captureCharge.1`). Store `captured_amount = charge.chargedAmount` (`captureCharge.3`).
 
 5. **Stop double captures in your app.** Capture and cancel ignore the `Idempotency-Key` (`captureCharge.16`, `createCancel.14`; compare `every-request.19`). So:
@@ -43,11 +43,11 @@ Use this when the money should be held at checkout and taken later: at shipping,
    - From January 2027 a capture must equal the hold (`captureCharge.9`). Do this instead: cancel the hold (step 7), hold the new amount on the same saved card with a NEW key (`idempotencyKey("charge", order.id, newAmount)`), then capture it in full. Make it a setting so you can switch on the date.
 
 7. **Cancel before shipping (release the hold).** Re-read the charge: cancel only `authorized` (`createCancel.6`). A `successful` charge needs a refund (`refunds.md`); a card charge waiting for 3-D Secure can't be cancelled (`createCancel.5`).
-   - `client.cancels.createCancel({ storeId, chargeId, body: {} })`. The reply is `pending` (`createRefund.3`). Wait with `settleCancel(client, storeId, chargeId, cancel.id)`, then re-read the charge: `canceled` = released (`createCancel.3`).
+   - `client.cancels.createCancel(storeId, chargeId, key, {})`. The reply is `pending` (`createRefund.3`). Wait with `settleCancel(client, storeId, chargeId, cancel.id)`, then re-read the charge: `canceled` = released (`createCancel.3`).
    - `failed` → the hold is still there; show it (`createCancel.13`).
    - Cancelling an already-cancelled charge is refused (`createCancel.10`). Treat it as "re-read the charge".
 
-8. **Holds that are never captured.** From January 2027 an uncaptured hold is cancelled automatically after 25 days (`background.39`). Run a daily job: find orders held for more than about 20 days; capture, or cancel and hold again. A capture after a hold expired fails with payment error 313 (`captureCharge.13`). A hold the platform cancelled carries cancel `reason: expired` (`createCancel.12`). To capture automatically at a set time, send `capture_at` with the hold (`createCharge.23`).
+8. **Holds that are never captured.** From January 2027 an uncaptured hold is cancelled automatically after 25 days (`background.39`). Run a daily job: find orders held for more than about 20 days; capture, or cancel and hold again. A capture after a hold expired fails with payment error 313 (`captureCharge.13`). A hold the platform cancelled carries cancel `reason: expired` (`createCancel.12`); SDK 1.2.3 has no `reason` field on a cancel, so read it as `cancel.additionalProperties?.["reason"]` (SDK 1.2.3 bug N4) (SDK, tested). To capture automatically at a set time, send `capture_at` with the hold (`createCharge.23`).
 
 9. **Webhooks** (receiver: `shared/webhooks.md`):
    - `charge_updated` with `authorized` = the hold is ready, not a payment (`createCharge.30`, `background.20`).

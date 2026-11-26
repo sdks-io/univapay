@@ -1,126 +1,74 @@
 # Models reference (APIMatic TypeScript)
 
-Lookup tables beside **typescript-models**, which carries the rules. Model modules build their
-schemas from the `s` namespace (`src/core/validation/`, the same in every APIMatic TypeScript SDK):
-`zod/v4-mini`'s `string`, `number`, `boolean`, `array`, `record`, `union`, `nullable`, `optional`,
-`literal`, `unknown`, plus the SDK's `object`, `enumOf`, `discriminatedUnion`, `of`, `lazy`,
-`optionalNullable`, `defaulted`, `dateTime`, `rfc1123DateTime`, `unixSecondsDateTime`, `dateOnly` and
-`bytes`.
-Confirm concrete type and field names in `src/models/`.
+## Date/time
 
-## Spec kind to TypeScript type
+Date/time values are plain `string` properties with a bare `string()` schema — the SDK converts nothing
+and validates no format. The format is the one the spec declares (RFC-3339 in many APIs, but also things
+like `dd-MM-yyyy HH:mm:ss`), and it is written in the field's doc comment in `src/models/`. Read that
+comment, then produce the string yourself — `Date.toISOString()`, or a formatter such as `date-fns` or
+`dayjs` for a non-ISO format.
 
-| API definition kind | Model type | Schema entry |
-| --- | --- | --- |
-| string, password, uuid, regex-constrained | `string` | `s.string()` |
-| email, uri, ip, hostname, json-pointer | `string` | `s.string()` — the format is a value check, see *Deriving a changed copy* |
-| `time` | `string` | `s.string()` |
-| `date` | `string` | `s.dateOnly()` |
-| `date-time` (ISO 8601 / RFC 1123 / unix) | `Date` | `s.dateTime()` / `s.rfc1123DateTime()` / `s.unixSecondsDateTime()` |
-| int32, int64 | `number` | `s.int()` |
-| float, double, big-decimal | `number` | `s.float64()` |
-| boolean | `boolean` | `s.boolean()` |
-| binary, file — as a declared <em>field</em> | `Uint8Array` | `s.bytes()` (base64) |
-| a pinned value | that literal type | `s.literal(value)` |
-| free-form object | `Record<string, unknown>` | `s.record(s.string(), s.unknown())` |
-| array of `T` | `T[]` | `s.array(...)` |
-| map of `T` | `Record<string, T>` | `s.record(s.string(), ...)` |
-| model / enum reference | the referenced type | `s.lazy(...)`, or the bare schema const |
-| unconstrained / no schema | `unknown` | `s.unknown()` — rejects nothing |
+## String-enum shape
 
-Nullability folds onto whatever the row produced: `T | null` with `s.nullable(...)`. It is never
-folded onto `unknown`, which already admits `null`.
+A real TypeScript `enum` declaration, with its runtime schema beside it:
 
-A value constraint the spec declares on a row — a length, a pattern, a checked format, a numeric
-bound — never changes the type; where it is enforced is stated under *Deriving a changed copy*.
+```typescript
+export enum {EnumType} {
+  FirstValue = 'first_value',
+  SecondValue = 'second_value',
+}
 
-## Field declaration cheat sheet
-
-| Declared | Schema entry | Building it |
-| --- | --- | --- |
-| `f: T` | the entry itself | always provide |
-| `f?: T` | `s.optional(...)` | **omit the key** (not `f: undefined`) |
-| `f?: T` | `s.defaulted(...)` | omitting it sends its default; set the value you mean |
-| `f: T \| null` | `s.nullable(...)` | provide `null` to send JSON `null` |
-| `f?: T \| null` | `s.optionalNullable(...)` | omit, or provide `null` |
-
-## Deriving a changed copy
-
-```ts
-const updated = { ...model, {field}: "..." };
+export const {enumType}Schema: Schema<{EnumType}> = stringEnum({EnumType});
 ```
 
-Nothing validates a spread — the shape is checked when you pass the value to an operation or call
-`encode` yourself, and that is where a wrong type surfaces. A value constraint the spec declares
-(`minLength`, `pattern`, `minimum`, a checked `format`, …) is **not** checked by an operation;
-`{model}Schema` checks it — `validate(value)` reports it, `encode` and `decode` throw on it. The copy
-is **shallow**: nested models and arrays are shared with the original, so mutating one mutates both.
-Undeclared keys the source carried are copied along, which is what keeps a read-modify-write
-round-trip from dropping server-side state the SDK does not model.
+Usage:
 
-## Schema surface
+```typescript
+import { {EnumType} } from 'univapay-client-sdk';
 
-```ts
-type Schema<T, W = Encoded<T>> = {
-  readonly decode: (value: unknown) => T;  // wire shape  -> model
-  encode(value: T): W;                     // model shape -> wire
-  validate(value: T): ValidationResult;    // encode's rules, no conversion, no throw
-};
-
-type ValidationResult = { success: true } | { success: false; message: string };
-
-type EnumSchema<T> = Schema<T, T> & { readonly values: readonly T[] };
+const v: {EnumType} = {EnumType}.FirstValue;    // reference the member
+const raw: string = {EnumType}.FirstValue;      // string assignment works directly
 ```
 
-`Schema`, `EnumSchema`, `Encoded` and `ValidationResult` are re-exported from the package root as
-types.
+A bare string literal is not assignable, and `'new_value' as {EnumType}` compiles (an assertion between an enum and `string` is allowed) but proves nothing. A schema built
+as `stringEnum({EnumType}, true)` — emitted only when the spec marks the enum as accepting additional
+values — is the one case where unknown values pass validation; a plain `'new_value' as {EnumType}`
+reaches it (no `as unknown` needed). This SDK has no such enum.
 
-`validate` runs the same rules `encode` runs and reports instead of throwing: `message` lists every
-failing field with its reason (`code: expected regex format; attributes: must have at most 10
-properties`), the same list a `SchemaError` from `encode` carries after its leading sentence. On a
-model whose spec declares value constraints, `{model}Schema` enforces them and `validate` is how you
-check a value before sending it; the operations encode and decode through a structural twin,
-`{model}InternalSchema`, exported from the model's module but not from the package root, so a
-constraint is never applied on the way out or on the way in. On every other model `validate` checks
-shape alone.
+## Numeric-enum shape
 
-`Encoded<T>` — the wire projection:
+Same declaration over `number`, with `numberEnum` for the schema:
 
-| `T` | `Encoded<T>` |
-| --- | --- |
-| `Date` | `string \| number` |
-| `Uint8Array` | `string` (base64) |
-| `E[]` | `Encoded<E>[]` |
-| object | each property projected |
-| anything else | itself |
+```typescript
+export enum {EnumType} {
+  Off = 0,
+  On = 1,
+}
 
-A `SchemaError` message is prefixed `Wire value could not be decoded.` or `Type could not be encoded
-for the wire.`, followed by `path: expected X` per issue — `X` the type, format or set of values the
-schema expected; neither the value nor its type is named (`<root>` where there is no path). `.cause`
-is the underlying zod error with the structured issue list.
+export const {enumType}Schema: Schema<{EnumType}> = numberEnum({EnumType});
 
-## Enums
+request.{enumProp} = {EnumType}.On;
+const n: number = {EnumType}.On;   // number assignment works directly
+```
 
-An `if`/`else if` chain over the members with no final `else` silently does nothing for a value newer
-than the SDK. `type Known = (typeof {Enum})[keyof typeof {Enum}]` is the closed set at type level.
+## Union types — finding the exact members
 
-## Dates
+For a oneOf/anyOf union type, open its file under **`src/models/containers/`**. Its doc comment and the
+literal `oneOf([...])` / `anyOf([...])` call are the only reliable way to tell the two apart — the
+runtime type label reads `OneOf<...>` for both. Each variant `{V}` produces a **type guard** on the
+union's namespace:
 
-- `s.dateTime()` requires an offset on decode; encodes via `toISOString()`.
-- `s.rfc1123DateTime()` is strict IMF-fixdate (two-digit day, `GMT`); encodes via `toUTCString()`.
-- `s.unixSecondsDateTime()` also decodes a numeric string; encodes floored to whole seconds.
-- `s.dateOnly()` checks the `YYYY-MM-DD` shape. `s.bytes()` rejects non-base64 input on decode.
+- `{Union}.is{V}(value): value is {V}` — read-side narrowing.
 
-Failures to expect:
+There are **no `from{V}` factories** in TypeScript. To build a union value you assign the variant's own
+object shape directly; see the union section in `SKILL.md` for the write-side pattern.
 
-- `"2024-06-17"` or `"2024-06-17T15:30:00"` into an `s.dateTime()` field → `SchemaError` (no offset).
-- `"Mon, 7 Jun 2024 15:30:00 GMT"` into `s.rfc1123DateTime()` → `SchemaError` (day must be two
-  digits).
-- Epoch **milliseconds** into `s.unixSecondsDateTime()` → no error; it decodes to a date ~50,000
-  years out. Divide by 1000, or pass a `Date`.
+## Notes
 
-## Recursive and self-referential models
-
-A self-referential model (a tree node, a nested comment) needs no special handling: generated schemas
-wrap a nested reference in `s.lazy(() => otherSchema)`.
-
+- Optional model properties typed as `T | undefined` are omitted from the serialized JSON when `undefined` — distinct from sending an explicit `null`.
+- A model captures unknown response fields when its schema is `expandoObject(...)` — the interface then
+  carries an index signature `[key: string]: unknown` and the extras sit on the object itself, with no
+  `additionalProperties` member — or `typedExpandoObject(schema, '<key>', <valueSchema>)`, which collects
+  them under the member named by its second argument. Where the schema is a plain `object(...)`, unknown
+  fields are dropped on deserialization. Which form you get varies per SDK — read the
+  model's schema.
